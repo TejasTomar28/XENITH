@@ -1,0 +1,4 @@
+# FraudShield orchestration placeholder.
+# Frontend, backend, AI service, and PostgreSQL will be configured later.
+# There are no runnable services at this milestone.
+services: {}

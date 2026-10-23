@@ -1,0 +1,72 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+secrets/
+
+# Java and Maven
+*.class
+*.jar
+*.war
+*.ear
+**/target/
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+
+# Node.js and Vite
+node_modules/
+dist/
+.vite/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build and runtime artifacts
+build/
+*.log
+*.pid
+tmp/
+.cache/
+
+# Generated data and model artifacts; retain folder markers
+/data/*
+!/data/.gitkeep
+*.pkl
+*.pickle
+*.joblib
+*.ubj
+*.onnx
+/output/*
+!/output/design/
+
+# IDE and OS files
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+.DS_Store
+._*
+Thumbs.db
