@@ -71,7 +71,12 @@ class FeatureMathAndConfigurationTest {
                   "odd_hour_minimum": 20000,
                   "new_merchant_lookback_days": 90,
                   "new_merchant_minimum": 25000,
-                  "multiple_red_flags_count": 3
+                  "multiple_red_flags_count": 3,
+                  "alert_high_amount": 50000,
+                  "alert_high_sla_minutes": 30,
+                  "alert_medium_sla_minutes": 240,
+                  "ai_step_up_threshold": 0.70,
+                  "ai_block_threshold": 0.90
                 }
                 """;
     }

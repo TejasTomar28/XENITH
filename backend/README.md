@@ -1,6 +1,6 @@
 # FraudShield backend
 
-This module contains the Java 17 Spring Boot backend for FraudShield. Milestone 01 provides database-backed users, stateless JWT authentication, role boundaries, gateway API-key enforcement and structured API errors. Milestone 02 adds the PostgreSQL persistence model, JPA repositories, official-data importer and evaluation reset support. Milestone 03 adds stored-history feature calculation and the complete rules-only R1-R13 evaluator. The authorization API and transaction lifecycle orchestration remain intentionally unimplemented.
+This module contains the Java 17 Spring Boot backend for FraudShield. Milestone 01 provides database-backed users, stateless JWT authentication, role boundaries, gateway API-key enforcement and structured API errors. Milestone 02 adds the PostgreSQL persistence model, JPA repositories, official-data importer and evaluation reset support. Milestone 03 adds stored-history feature calculation and the complete rules-only R1-R13 evaluator. Milestone 04 adds the gateway authorization workflow, idempotent persistence, model inference fallback and fraud-alert creation.
 
 ## Requirements
 
@@ -22,6 +22,9 @@ Set secrets in the environment. Do not commit their values.
 | `JWT_ISSUER` | Token issuer, default `fraudshield-backend` |
 | `JWT_EXPIRATION_SECONDS` | Token lifetime, 60–86400 seconds; default 3600 |
 | `GATEWAY_API_KEY` | Simulated gateway key, at least 24 characters |
+| `AI_SERVICE_URL` | Internal FastAPI prediction URL, default `http://localhost:8000/internal/v1/predictions` |
+| `AI_INTERNAL_API_KEY` | Credential sent only to the internal FastAPI service |
+| `AI_TIMEOUT_MS` | Total model-call budget in milliseconds, maximum and default 150 |
 
 Start the application from this directory after PostgreSQL is ready:
 
@@ -50,13 +53,13 @@ The default development usernames are `cardholder`, `analyst` and `manager`. Ove
 - `GET /api/v1/health` is public and returns JSON.
 - `POST /api/v1/auth/login` returns a signed bearer token for an enabled user.
 - `GET /api/v1/auth/me` returns the authenticated identity.
-- `POST /api/v1/authorisations` has no controller yet. The security chain already requires `X-API-Key`; a valid gateway request reaches the application and receives 404 until transaction processing is implemented.
+- `POST /api/v1/authorisations` validates and decides a transaction. It accepts only `X-API-Key`, persists the original response atomically and returns that response for an identical retry. Reusing a transaction ID with a changed payload returns HTTP 409.
 
 Future `/api/v1/me/**`, `/api/v1/analyst/**` and `/api/v1/manager/**` routes are restricted to their matching roles. Resource ownership checks will be added with the related domain entities.
 
 ## Persistence model
 
-Flyway V2 creates reference tables for countries, cities and merchant category codes; identity/card tables for customers and cards; merchant and transaction tables; feature, reason-code and model-prediction records; step-up, alert and manager-approval workflow records; notification outbox records; versioned rule configuration; append-only audit events; and import execution metadata.
+Flyway V2 creates reference tables for countries, cities and merchant category codes; identity/card tables for customers and cards; merchant and transaction tables; feature, reason-code and model-prediction records; step-up, alert and manager-approval workflow records; notification outbox records; versioned rule configuration; append-only audit events; and import execution metadata. Flyway V3 adds the rules-only decision and score fields needed to reproduce an AI-influenced authorization response.
 
 Transaction timestamps use PostgreSQL `TIMESTAMPTZ` and Java `OffsetDateTime`. Money uses `NUMERIC` and `BigDecimal`. Card records contain only a BCrypt hash and the final four digits of the synthetic card number. Mutable cards, transactions, step-up requests, alerts and manager proposals have version columns. Card and alert repositories also expose pessimistic locking queries for future transactional workflows.
 
@@ -66,7 +69,11 @@ The transaction repository provides strict-prior queries for velocity, same-IST-
 
 `FraudEvaluationService.evaluate(TransactionEvaluationRequest)` is the internal Milestone 03 entry point. It loads the card first and evaluates R1/R2 without reading historical features. For non-hard-stop requests it loads reference data and the active persisted configuration, calculates stored-history and AI-compatible features, then evaluates R3-R13 in official rule order.
 
-The result contains the rules-only decision, nullable hard-stop score, ordered reason codes, calculated features and configuration checksum. The evaluator does not persist the current request, mutate lifecycle status, create an alert, generate an OTP or call the AI service.
+The result contains the rules-only decision, nullable hard-stop score, ordered reason codes, calculated features and configuration checksum. The evaluator itself does not persist the current request, mutate lifecycle status, create an alert, generate an OTP or call the AI service.
+
+`TransactionAuthorizationService.authorize(AuthorizationRequest)` is the live entry point. It serializes same-card decisions with a PostgreSQL row lock, invokes the rules evaluator, calls FastAPI only for APPROVE or STEP_UP candidates, applies one AI-2 escalation step, and atomically writes transaction, feature, reason, prediction, audit and optional alert records. Model errors or calls exceeding 150 ms persist `MODEL_UNAVAILABLE` and return the rules-only decision.
+
+A STEP_UP result is stored as `STEP_UP_PENDING` and passed to `StepUpWorkflowHandoff`. Milestone 04 intentionally does not create an OTP or `step_up_requests` row; Milestone 05 must implement that handoff.
 
 All runtime thresholds, windows, points and MCC lists are required in the active configuration JSON. Missing or malformed settings stop evaluation explicitly. There are no threshold defaults in application code. The currently supported normalized keys are exercised by the configuration tests; compatibility with the official JSON file must be confirmed when the source data pack is available.
 
@@ -114,4 +121,4 @@ There is no reset HTTP endpoint. The database prevents normal updates or deletes
 mvn verify
 ```
 
-JWT and rules-engine unit tests do not need infrastructure. The integration suite uses a real PostgreSQL Testcontainer to run both migrations, validate Hibernate mappings, exercise constraints/imports/history queries/reset behavior, evaluate transactions end to end and recheck Milestone 01 authentication. It is skipped when Docker is unavailable; H2 is not used.
+JWT, rules-engine and HTTP model-client unit tests do not need database infrastructure. The integration suite uses a real PostgreSQL Testcontainer to run all migrations, validate Hibernate mappings, exercise constraints/imports/history queries/reset behavior, authorize transactions end to end, verify idempotency and same-card locking, and recheck Milestone 01 authentication. It is skipped when Docker is unavailable; H2 is not used.

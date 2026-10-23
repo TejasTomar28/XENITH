@@ -1,6 +1,9 @@
 package com.fraudshield.backend.common.exception;
 
 import com.fraudshield.backend.auth.InvalidCredentialsException;
+import com.fraudshield.backend.authorization.SemanticValidationException;
+import com.fraudshield.backend.fraud.MissingReferenceDataException;
+import com.fraudshield.backend.fraud.MissingRuleConfigurationException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import java.util.Comparator;
@@ -28,7 +31,7 @@ public class GlobalExceptionHandler {
             HttpServletRequest request) {
         List<FieldViolation> violations = exception.getBindingResult().getFieldErrors().stream()
                 .sorted(Comparator.comparing(FieldError::getField))
-                .map(error -> new FieldViolation(error.getField(), error.getDefaultMessage()))
+                .map(error -> new FieldViolation(apiField(error.getField()), error.getDefaultMessage()))
                 .toList();
         return response(request, HttpStatus.UNPROCESSABLE_ENTITY, "VALIDATION_ERROR", "Request validation failed", violations);
     }
@@ -48,6 +51,23 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(HttpMessageNotReadableException.class)
     ResponseEntity<ApiError> malformedBody(HttpServletRequest request) {
         return response(request, HttpStatus.BAD_REQUEST, "MALFORMED_REQUEST", "Request body is malformed", List.of());
+    }
+
+    @ExceptionHandler(SemanticValidationException.class)
+    ResponseEntity<ApiError> semanticValidation(SemanticValidationException exception, HttpServletRequest request) {
+        return response(request, HttpStatus.UNPROCESSABLE_ENTITY, "VALIDATION_ERROR", "Request validation failed",
+                exception.violations());
+    }
+
+    @ExceptionHandler(MissingReferenceDataException.class)
+    ResponseEntity<ApiError> missingReference(MissingReferenceDataException exception, HttpServletRequest request) {
+        return response(request, HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", exception.getMessage(), List.of());
+    }
+
+    @ExceptionHandler(MissingRuleConfigurationException.class)
+    ResponseEntity<ApiError> missingConfiguration(HttpServletRequest request) {
+        return response(request, HttpStatus.INTERNAL_SERVER_ERROR, "CONFIGURATION_UNAVAILABLE",
+                "Fraud-rule configuration is unavailable", List.of());
     }
 
     @ExceptionHandler(InvalidCredentialsException.class)
@@ -93,5 +113,17 @@ public class GlobalExceptionHandler {
             String message,
             List<FieldViolation> violations) {
         return ResponseEntity.status(status).body(ApiErrorFactory.create(request, code, message, violations));
+    }
+
+    private static String apiField(String javaField) {
+        return switch (javaField) {
+            case "transactionId" -> "txn_id";
+            case "cardId" -> "card_id";
+            case "transactionTimestamp" -> "txn_ts";
+            case "merchantId" -> "merchant_id";
+            case "transactionCity" -> "txn_city";
+            case "transactionCountry" -> "txn_country";
+            default -> javaField;
+        };
     }
 }

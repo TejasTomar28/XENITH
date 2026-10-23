@@ -2,6 +2,11 @@ package com.fraudshield.backend.integration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.hasItem;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -11,6 +16,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fraudshield.backend.auth.UserAccount;
 import com.fraudshield.backend.auth.UserAccountRepository;
+import com.fraudshield.backend.authorization.ai.FraudModelClient;
+import com.fraudshield.backend.authorization.ai.ModelEvaluation;
+import com.fraudshield.backend.authorization.ai.ModelStatus;
+import com.fraudshield.backend.authorization.ai.TopFactor;
 import com.fraudshield.backend.dataset.DatasetImportException;
 import com.fraudshield.backend.dataset.EvaluationResetService;
 import com.fraudshield.backend.dataset.ImportSummary;
@@ -32,8 +41,12 @@ import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.flywaydb.core.Flyway;
@@ -42,6 +55,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -124,14 +138,19 @@ class BackendIntegrationTest {
     @Autowired
     FraudEvaluationService fraudEvaluationService;
 
+    @MockBean
+    FraudModelClient modelClient;
+
     @BeforeEach
     void clearDomainData() {
         jdbc.execute("TRUNCATE TABLE audit_events, rule_configuration_versions, mcc_codes, country_risk CASCADE");
+        reset(modelClient);
+        when(modelClient.evaluate(any())).thenReturn(ModelEvaluation.unavailable());
     }
 
     @Test
     void applicationContextStartsAndMigrationIsApplied() throws Exception {
-        assertThat(flyway.info().applied()).hasSize(2);
+        assertThat(flyway.info().applied()).hasSize(3);
         try (var connection = dataSource.getConnection();
                 var result = connection.getMetaData().getTables(null, null, "app_users", new String[] {"TABLE"})) {
             assertThat(result.next()).isTrue();
@@ -215,13 +234,13 @@ class BackendIntegrationTest {
     }
 
     @Test
-    void validGatewayIdentityCanReachUnimplementedAuthorizationRoute() throws Exception {
+    void validGatewayIdentityReachesAuthorizationValidation() throws Exception {
         mockMvc.perform(post("/api/v1/authorisations")
                         .header(GatewayApiKeyFilter.API_KEY_HEADER, GATEWAY_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
-                .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.code").value("RESOURCE_NOT_FOUND"));
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
     }
 
     @Test
@@ -495,6 +514,240 @@ class BackendIntegrationTest {
         assertThat(transactionRepository.countPriorTransactions("CARD1", current.minusMinutes(10), current)).isEqualTo(1);
     }
 
+    @Test
+    void authorizationApprovesValidTransactionAndPersistsEvidence() throws Exception {
+        seedReferenceData();
+        insertActiveRuleConfiguration("auth-approve", 5);
+
+        mockMvc.perform(post("/api/v1/authorisations")
+                        .header(GatewayApiKeyFilter.API_KEY_HEADER, GATEWAY_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(authorizationBody("T300000001", "3500.00", "MER1", "5411", "POS")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.txn_id").value("T300000001"))
+                .andExpect(jsonPath("$.decision").value("APPROVE"))
+                .andExpect(jsonPath("$.status").value("APPROVED"))
+                .andExpect(jsonPath("$.rule_risk_score").value(0))
+                .andExpect(jsonPath("$.model_status").value("MODEL_UNAVAILABLE"))
+                .andExpect(jsonPath("$.alert_id").doesNotExist());
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM transactions WHERE txn_id='T300000001'", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM transaction_features", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM model_predictions", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM audit_events WHERE entity_type='TRANSACTION'", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void fraudBlockCreatesOneAlertAndPolicyBlockCreatesNone() throws Exception {
+        seedReferenceData();
+        insertActiveRuleConfiguration("auth-block", 5);
+        jdbc.update("UPDATE merchants SET merchant_risk='BLACKLISTED' WHERE merchant_id='MER1'");
+
+        mockMvc.perform(post("/api/v1/authorisations")
+                        .header(GatewayApiKeyFilter.API_KEY_HEADER, GATEWAY_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(authorizationBody("T300000002", "3500.00", "MER1", "5411", "POS")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.decision").value("BLOCK"))
+                .andExpect(jsonPath("$.reason_codes[0]").value("MERCHANT_BLACKLISTED"))
+                .andExpect(jsonPath("$.alert_id").isNotEmpty())
+                .andExpect(jsonPath("$.model_status").value("NOT_EVALUATED"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fraud_alerts", Integer.class)).isEqualTo(1);
+        verify(modelClient, never()).evaluate(any());
+
+        jdbc.update("UPDATE merchants SET merchant_risk='LOW' WHERE merchant_id='MER1'");
+        jdbc.update("UPDATE cards SET daily_limit=1000 WHERE card_id='CARD1'");
+        mockMvc.perform(post("/api/v1/authorisations")
+                        .header(GatewayApiKeyFilter.API_KEY_HEADER, GATEWAY_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(authorizationBody("T300000003", "3500.00", "MER1", "5411", "POS")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.decision").value("BLOCK"))
+                .andExpect(jsonPath("$.reason_codes[0]").value("DAILY_LIMIT_EXCEEDED"))
+                .andExpect(jsonPath("$.alert_id").doesNotExist());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fraud_alerts", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void softRuleCreatesPendingStateWithoutFakeOtp() throws Exception {
+        seedReferenceData();
+        insertActiveRuleConfiguration("auth-step-up", 5);
+
+        mockMvc.perform(post("/api/v1/authorisations")
+                        .header(GatewayApiKeyFilter.API_KEY_HEADER, GATEWAY_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(authorizationBody("T300000004", "50000.00", "MER1", "5411", "ECOM")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.decision").value("STEP_UP"))
+                .andExpect(jsonPath("$.status").value("STEP_UP_PENDING"))
+                .andExpect(jsonPath("$.reason_codes[0]").value("AMOUNT_SPIKE"))
+                .andExpect(jsonPath("$.alert_id").doesNotExist());
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM step_up_requests", Integer.class)).isZero();
+    }
+
+    @Test
+    void identicalRetryReturnsOriginalWithoutDuplicateEffectsOrModelCall() throws Exception {
+        seedReferenceData();
+        insertActiveRuleConfiguration("auth-retry", 5);
+        String body = authorizationBody("T300000005", "3500.00", "MER1", "5411", "POS");
+
+        MvcResult first = mockMvc.perform(post("/api/v1/authorisations")
+                        .header(GatewayApiKeyFilter.API_KEY_HEADER, GATEWAY_KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk()).andReturn();
+        MvcResult second = mockMvc.perform(post("/api/v1/authorisations")
+                        .header(GatewayApiKeyFilter.API_KEY_HEADER, GATEWAY_KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk()).andReturn();
+
+        assertThat(second.getResponse().getContentAsString()).isEqualTo(first.getResponse().getContentAsString());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM transactions", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM audit_events", Integer.class)).isEqualTo(1);
+        verify(modelClient).evaluate(any());
+    }
+
+    @Test
+    void changedPayloadForExistingTransactionReturnsConflict() throws Exception {
+        seedReferenceData();
+        insertActiveRuleConfiguration("auth-conflict", 5);
+        mockMvc.perform(post("/api/v1/authorisations")
+                        .header(GatewayApiKeyFilter.API_KEY_HEADER, GATEWAY_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(authorizationBody("T300000006", "3500.00", "MER1", "5411", "POS")))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/v1/authorisations")
+                        .header(GatewayApiKeyFilter.API_KEY_HEADER, GATEWAY_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(authorizationBody("T300000006", "3600.00", "MER1", "5411", "POS")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("CONFLICT"));
+        assertThat(jdbc.queryForObject("SELECT amount FROM transactions WHERE txn_id='T300000006'", BigDecimal.class))
+                .isEqualByComparingTo("3500.00");
+    }
+
+    @Test
+    void validatesInputAndUnknownReferences() throws Exception {
+        seedReferenceData();
+        insertActiveRuleConfiguration("auth-validation", 5);
+        String invalid = authorizationBody("BAD", "0", "MER1", "5411", "POS");
+        mockMvc.perform(post("/api/v1/authorisations")
+                        .header(GatewayApiKeyFilter.API_KEY_HEADER, GATEWAY_KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content(invalid))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.field_errors[*].field", hasItem("txn_id")))
+                .andExpect(jsonPath("$.field_errors[*].field", hasItem("amount")));
+
+        mockMvc.perform(post("/api/v1/authorisations")
+                        .header(GatewayApiKeyFilter.API_KEY_HEADER, GATEWAY_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(authorizationBody("T300000007", "3500.00", "MISSING", "5411", "POS")))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("RESOURCE_NOT_FOUND"));
+    }
+
+    @Test
+    void aiEscalatesApproveOnceAndStepUpToBlock() throws Exception {
+        seedReferenceData();
+        insertActiveRuleConfiguration("auth-ai", 5);
+        List<TopFactor> factors = List.of(
+                new TopFactor("amount", "Amount contributed to risk", 0.4),
+                new TopFactor("channel", "Channel contributed to risk", 0.2),
+                new TopFactor("new_merchant_flag", "Merchant familiarity contributed to risk", 0.1));
+        when(modelClient.evaluate(any())).thenReturn(
+                new ModelEvaluation(ModelStatus.AVAILABLE, new BigDecimal("0.82"), factors, "model-v1"),
+                new ModelEvaluation(ModelStatus.AVAILABLE, new BigDecimal("0.93"), factors, "model-v1"));
+
+        mockMvc.perform(post("/api/v1/authorisations")
+                        .header(GatewayApiKeyFilter.API_KEY_HEADER, GATEWAY_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(authorizationBody("T300000008", "3500.00", "MER1", "5411", "POS")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.decision").value("STEP_UP"))
+                .andExpect(jsonPath("$.reason_codes[0]").value("HIGH_FRAUD_SCORE_MODEL"))
+                .andExpect(jsonPath("$.fraud_score").value(0.82))
+                .andExpect(jsonPath("$.top_factors.length()").value(3));
+
+        mockMvc.perform(post("/api/v1/authorisations")
+                        .header(GatewayApiKeyFilter.API_KEY_HEADER, GATEWAY_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(authorizationBody("T300000009", "50000.00", "MER1", "5411", "ECOM")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.decision").value("BLOCK"))
+                .andExpect(jsonPath("$.reason_codes[0]").value("AMOUNT_SPIKE"))
+                .andExpect(jsonPath("$.reason_codes[2]").value("HIGH_FRAUD_SCORE_MODEL"))
+                .andExpect(jsonPath("$.alert_id").isNotEmpty());
+        assertThat(jdbc.queryForObject("SELECT priority FROM fraud_alerts", String.class)).isEqualTo("HIGH");
+    }
+
+    @Test
+    void modelFallbackUsesRulesOnlyDecisionAndPersistsUnavailability() throws Exception {
+        seedReferenceData();
+        insertActiveRuleConfiguration("auth-fallback", 5);
+        when(modelClient.evaluate(any())).thenReturn(ModelEvaluation.unavailable());
+
+        mockMvc.perform(post("/api/v1/authorisations")
+                        .header(GatewayApiKeyFilter.API_KEY_HEADER, GATEWAY_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(authorizationBody("T300000010", "3500.00", "MER1", "5411", "POS")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.decision").value("APPROVE"))
+                .andExpect(jsonPath("$.fraud_score").doesNotExist())
+                .andExpect(jsonPath("$.top_factors").isEmpty())
+                .andExpect(jsonPath("$.model_status").value("MODEL_UNAVAILABLE"));
+        assertThat(jdbc.queryForObject("SELECT model_status FROM model_predictions", String.class))
+                .isEqualTo("MODEL_UNAVAILABLE");
+    }
+
+    @Test
+    void failedAuthorizationLeavesNoPartialRecord() throws Exception {
+        seedReferenceData();
+        mockMvc.perform(post("/api/v1/authorisations")
+                        .header(GatewayApiKeyFilter.API_KEY_HEADER, GATEWAY_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(authorizationBody("T300000011", "3500.00", "MER1", "5411", "POS")))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.code").value("CONFIGURATION_UNAVAILABLE"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM transactions", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM audit_events", Integer.class)).isZero();
+    }
+
+    @Test
+    void concurrentSameCardAuthorizationsPreserveDailyLimit() throws Exception {
+        seedReferenceData();
+        insertActiveRuleConfiguration("auth-concurrency", 5);
+        insertTransaction("T000000099", "2026-03-04T14:05:00+05:30", "20000.00", "APPROVED", "POS", "MER1");
+        CountDownLatch firstInsideModel = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        when(modelClient.evaluate(any())).thenAnswer(invocation -> {
+            firstInsideModel.countDown();
+            assertThat(releaseFirst.await(5, TimeUnit.SECONDS)).isTrue();
+            return ModelEvaluation.unavailable();
+        });
+
+        var executor = Executors.newFixedThreadPool(2);
+        try {
+            var first = executor.submit(() -> postAuthorization(
+                    authorizationBodyAt("T300000012", "60000.00", "2026-03-05T14:05:00+05:30")));
+            assertThat(firstInsideModel.await(5, TimeUnit.SECONDS)).isTrue();
+            var second = executor.submit(() -> postAuthorization(
+                    authorizationBodyAt("T300000013", "60000.00", "2026-03-05T14:06:00+05:30")));
+            releaseFirst.countDown();
+
+            Set<String> decisions = Set.of(
+                    objectMapper.readTree(first.get(10, TimeUnit.SECONDS).getResponse().getContentAsString()).get("decision").asText(),
+                    objectMapper.readTree(second.get(10, TimeUnit.SECONDS).getResponse().getContentAsString()).get("decision").asText());
+            assertThat(decisions).containsExactlyInAnyOrder("APPROVE", "BLOCK");
+        } finally {
+            executor.shutdownNow();
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM transactions WHERE txn_id IN ('T300000012','T300000013')", Integer.class))
+                .isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM transactions WHERE txn_id IN ('T300000012','T300000013') AND original_decision='BLOCK'", Integer.class))
+                .isEqualTo(1);
+    }
+
     private void seedReferenceData() {
         jdbc.update("INSERT INTO country_risk VALUES ('IN','India','LOW')");
         jdbc.update("INSERT INTO cities VALUES ('Mumbai','IN',19.0760,72.8777,'METRO')");
@@ -503,6 +756,37 @@ class BackendIntegrationTest {
         jdbc.update("INSERT INTO cards(card_id,customer_id,pan_hash,last_four,card_type,card_status,seed_card_status,issue_date,expiry_date,home_city,home_country,daily_limit,international_enabled) VALUES ('CARD1','C001','$2a$12$01234567890123456789012345678901234567890123456789012','2222','DEBIT','ACTIVE','ACTIVE','2025-01-01','2029-12-31','Mumbai','IN',100000,false)");
         jdbc.update("INSERT INTO merchants VALUES ('MER1','Merchant One','5411','Grocery','Mumbai','IN','LOW')");
         jdbc.update("INSERT INTO merchants VALUES ('MER2','Merchant Two','5411','Grocery','Mumbai','IN','LOW')");
+    }
+
+    private String authorizationBody(String txnId, String amount, String merchantId, String mcc, String channel)
+            throws Exception {
+        return authorizationBodyAt(txnId, amount, "2026-03-05T14:05:00+05:30", merchantId, mcc, channel);
+    }
+
+    private String authorizationBodyAt(String txnId, String amount, String timestamp) throws Exception {
+        return authorizationBodyAt(txnId, amount, timestamp, "MER1", "5411", "POS");
+    }
+
+    private String authorizationBodyAt(
+            String txnId, String amount, String timestamp, String merchantId, String mcc, String channel) throws Exception {
+        return objectMapper.writeValueAsString(java.util.Map.of(
+                "txn_id", txnId,
+                "card_id", "CARD1",
+                "txn_ts", timestamp,
+                "amount", amount,
+                "currency", "INR",
+                "merchant_id", merchantId,
+                "mcc", mcc,
+                "channel", channel,
+                "txn_city", "Mumbai",
+                "txn_country", "IN"));
+    }
+
+    private MvcResult postAuthorization(String body) throws Exception {
+        return mockMvc.perform(post("/api/v1/authorisations")
+                        .header(GatewayApiKeyFilter.API_KEY_HEADER, GATEWAY_KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk()).andReturn();
     }
 
     private void insertTransaction(String txnId, String timestamp, String amount, String status, String channel, String merchant) {
@@ -545,7 +829,9 @@ class BackendIntegrationTest {
                 "high_velocity_points":25,"amount_spike_points":30,"high_risk_geo_points":25,"high_risk_mcc_points":15,
                 "odd_hour_points":15,"new_merchant_points":20,"high_risk_mccs":["4829","5967","6051","7995"],
                 "odd_hour_start_inclusive":0,"odd_hour_end_inclusive":4,"odd_hour_minimum":20000,
-                "new_merchant_lookback_days":90,"new_merchant_minimum":25000,"multiple_red_flags_count":3}
+                "new_merchant_lookback_days":90,"new_merchant_minimum":25000,"multiple_red_flags_count":3,
+                "alert_high_amount":50000,"alert_high_sla_minutes":30,"alert_medium_sla_minutes":240,
+                "ai_step_up_threshold":0.70,"ai_block_threshold":0.90}
                 """.formatted(velocityBurstCount);
         jdbc.update("INSERT INTO rule_configuration_versions(id,source_file,source_sha256,configuration,active,imported_at,imported_by) VALUES (?, 'fixture.json', ?, ?::jsonb, true, CURRENT_TIMESTAMP, 'test')",
                 UUID.randomUUID(), checksum, json);

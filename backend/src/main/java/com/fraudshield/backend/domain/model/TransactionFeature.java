@@ -20,5 +20,6 @@ public class TransactionFeature {
     @Column(name = "new_merchant") private Boolean newMerchant;
     @JdbcTypeCode(SqlTypes.JSON) @Column(name = "feature_snapshot", nullable = false, columnDefinition = "jsonb") private JsonNode featureSnapshot;
     @Column(name = "configuration_version", length = 128) private String configurationVersion;
+    @Column(name = "rule_risk_score") private Integer ruleRiskScore;
     protected TransactionFeature() {}
 }

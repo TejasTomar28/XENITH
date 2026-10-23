@@ -13,7 +13,7 @@ import org.hibernate.type.SqlTypes;
 public class ModelPrediction {
     @Id private UUID id;
     @ManyToOne(fetch = FetchType.LAZY, optional = false) @JoinColumn(name = "transaction_id") private CardTransaction transaction;
-    @Column(name = "model_version", nullable = false, length = 128) private String modelVersion;
+    @Column(name = "model_version", length = 128) private String modelVersion;
     @Column(name = "model_status", nullable = false, length = 24) private String modelStatus;
     @Column(name = "fraud_score", precision = 7, scale = 6) private BigDecimal fraudScore;
     @JdbcTypeCode(SqlTypes.JSON) @Column(name = "top_factors", nullable = false, columnDefinition = "jsonb") private JsonNode topFactors;

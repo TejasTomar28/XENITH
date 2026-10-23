@@ -68,7 +68,12 @@ public class PersistedRuleConfigurationProvider {
                 decimal(root, "odd_hour_minimum"),
                 integer(root, "new_merchant_lookback_days"),
                 decimal(root, "new_merchant_minimum"),
-                integer(root, "multiple_red_flags_count"));
+                integer(root, "multiple_red_flags_count"),
+                decimal(root, "alert_high_amount"),
+                integer(root, "alert_high_sla_minutes"),
+                integer(root, "alert_medium_sla_minutes"),
+                decimal(root, "ai_step_up_threshold"),
+                decimal(root, "ai_block_threshold"));
     }
 
     private int integer(JsonNode root, String key) {

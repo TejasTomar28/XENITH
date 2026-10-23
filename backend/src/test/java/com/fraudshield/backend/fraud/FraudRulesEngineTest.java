@@ -162,7 +162,8 @@ class FraudRulesEngineTest {
         RuleConfiguration highPoints = new RuleConfiguration("high-points", 10, 24, 5, 3, 4, 30,
                 new BigDecimal("5"), new BigDecimal("10000"), new BigDecimal("50000"), 800, 6,
                 60, 60, 60, 60, 60, 60, Set.of("6051"), 0, 4,
-                new BigDecimal("20000"), 90, new BigDecimal("25000"), 3);
+                new BigDecimal("20000"), 90, new BigDecimal("25000"), 3,
+                new BigDecimal("50000"), 30, 240, new BigDecimal("0.70"), new BigDecimal("0.90"));
         RuleEvaluationResult result = evaluate(request("45000", "IN", "6051", TransactionChannel.ECOM, 2), activeCard(), merchant("LOW"), false,
                 features(3, "0", "2400", null, true, 2), highPoints);
         assertThat(result.ruleRiskScore()).isEqualTo(100);
@@ -217,7 +218,8 @@ class FraudRulesEngineTest {
         return new RuleConfiguration("defaults", 10, 24, 5, 3, 4, 30,
                 new BigDecimal("5"), new BigDecimal("10000"), new BigDecimal("50000"), 800, 6,
                 25, 30, 25, 15, 15, 20, Set.of("4829", "5967", "6051", "7995"),
-                0, 4, new BigDecimal("20000"), 90, new BigDecimal("25000"), 3);
+                0, 4, new BigDecimal("20000"), 90, new BigDecimal("25000"), 3,
+                new BigDecimal("50000"), 30, 240, new BigDecimal("0.70"), new BigDecimal("0.90"));
     }
 
     private RuleConfiguration configWithBurst(int burst) {
@@ -228,6 +230,8 @@ class FraudRulesEngineTest {
                 base.impossibleTravelThresholdKmph(), base.impossibleTravelLookbackHours(), base.highVelocityPoints(),
                 base.amountSpikePoints(), base.highRiskGeoPoints(), base.highRiskMccPoints(), base.oddHourPoints(),
                 base.newMerchantPoints(), base.highRiskMccs(), base.oddHourStartInclusive(), base.oddHourEndInclusive(),
-                base.oddHourMinimum(), base.newMerchantLookbackDays(), base.newMerchantMinimum(), base.multipleRedFlagsCount());
+                base.oddHourMinimum(), base.newMerchantLookbackDays(), base.newMerchantMinimum(), base.multipleRedFlagsCount(),
+                base.alertHighAmount(), base.alertHighSlaMinutes(), base.alertMediumSlaMinutes(),
+                base.aiStepUpThreshold(), base.aiBlockThreshold());
     }
 }
