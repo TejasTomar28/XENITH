@@ -1,7 +1,9 @@
 import importlib.util
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from features import MODEL_FEATURES, derive_features, validate_features
 from synthetic_data import generate_rows, write_csv
@@ -65,6 +67,21 @@ class FraudShieldServiceTests(unittest.TestCase):
             self.assertTrue(0 <= result["fraud_score"] <= 1)
             self.assertEqual(len(result["top_factors"]), 3)
             self.assertTrue(all(factor["feature"] in MODEL_FEATURES for factor in result["top_factors"]))
+
+    @unittest.skipUnless(importlib.util.find_spec("fastapi"), "FastAPI is not installed")
+    def test_internal_api_key_is_required(self):
+        from fastapi import HTTPException
+        from app import require_internal_key
+
+        with mock.patch.dict(os.environ, {"AI_INTERNAL_API_KEY": ""}):
+            with self.assertRaises(HTTPException):
+                require_internal_key("anything")
+        with mock.patch.dict(os.environ, {"AI_INTERNAL_API_KEY": "expected-key"}):
+            for supplied in (None, "wrong-key"):
+                with self.assertRaises(HTTPException) as raised:
+                    require_internal_key(supplied)
+                self.assertEqual(raised.exception.status_code, 401)
+            self.assertIsNone(require_internal_key("expected-key"))
 
 
 if __name__ == "__main__":

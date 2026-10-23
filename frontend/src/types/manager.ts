@@ -50,19 +50,14 @@ export interface AuditEvent {
   after: Record<string, unknown> | null;
 }
 
-export interface RuleConfigurationSetting {
-  key: string;
-  value: unknown;
-}
-
 export interface RuleConfiguration {
   version: string;
-  settings: RuleConfigurationSetting[];
+  settings: Record<string, unknown>;
   updated_at: string;
 }
 
 export interface RuleConfigurationUpdateRequest {
   expected_version: string;
-  settings: RuleConfigurationSetting[];
+  settings: Record<string, unknown>;
   comment: string;
 }

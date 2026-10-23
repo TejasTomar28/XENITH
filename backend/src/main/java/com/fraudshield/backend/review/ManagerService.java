@@ -31,9 +31,12 @@ public class ManagerService {
   if(page<0||size<1||size>100)throw new SemanticValidationException("page","Invalid page or size");if(status!=null&&!Set.of("PENDING","APPROVED","REJECTED").contains(status))throw new SemanticValidationException("status","Unsupported proposal status");String where=status==null?"":" WHERE p.status=?";Object[] countArgs=status==null?new Object[]{}:new Object[]{status};
   long total=jdbc.queryForObject("SELECT count(*) FROM manager_approval_proposals p"+where,Long.class,countArgs);List<Object> args=new ArrayList<>(Arrays.asList(countArgs));args.add(size);args.add(page*size);
   var items=jdbc.queryForList("""
-   SELECT p.id proposal_id,p.status proposal_status,p.proposed_by,p.proposed_at,p.proposal_comment,p.reviewed_by,p.reviewed_at,p.review_comment,
-   a.id alert_id,a.priority,a.status,t.txn_id,t.amount FROM manager_approval_proposals p JOIN fraud_alerts a ON a.id=p.alert_id JOIN transactions t ON t.id=a.transaction_id
-   """+where+" ORDER BY CASE p.status WHEN 'PENDING' THEN 0 ELSE 1 END,p.proposed_at,p.id LIMIT ? OFFSET ?",args.toArray());return new AlertReviewService.Page<>(items,page,size,total);
+   SELECT p.id proposal_id,p.status proposal_status,maker.username proposed_by,p.proposed_at,p.proposal_comment comment,checker.username checked_by,p.reviewed_at checked_at,p.review_comment checker_comment,
+   a.id alert_id,a.priority alert_priority,a.status,t.txn_id,t.amount,ca.last_four,
+   ARRAY(SELECT reason_code FROM transaction_reason_codes r WHERE r.transaction_id=t.id ORDER BY sequence_no) reason_codes
+   FROM manager_approval_proposals p JOIN fraud_alerts a ON a.id=p.alert_id JOIN transactions t ON t.id=a.transaction_id
+   JOIN cards ca ON ca.card_id=t.card_id JOIN app_users maker ON maker.id=p.proposed_by LEFT JOIN app_users checker ON checker.id=p.reviewed_by
+   """+where+" ORDER BY CASE p.status WHEN 'PENDING' THEN 0 ELSE 1 END,p.proposed_at,p.id LIMIT ? OFFSET ?",args.toArray());return new AlertReviewService.Page<>(items.stream().map(this::normalize).toList(),page,size,total);
  }
  public Map<String,Object> proposalDetail(UUID id){Map<String,Object> proposal=reviews.proposal(id);UUID alert=(UUID)proposal.get("alert_id");return Map.of("proposal",proposal,"evidence",reviews.detail(alert));}
 
@@ -84,6 +87,14 @@ public class ManagerService {
  }
  private String csvValue(Object value){if(value==null)return "";String text=value.toString();if(!text.isEmpty()&&"=+-@".indexOf(text.charAt(0))>=0)text="'"+text;return "\""+text.replace("\"","\"\"")+"\"";}
  private Map<String,Long> counts(String sql,Object...args){Map<String,Long> result=new LinkedHashMap<>();jdbc.query(sql,r->{result.put(r.getString(1),r.getLong(2));},args);return result;}
+ private Map<String,Object> normalize(Map<String,Object> source){Map<String,Object> result=new LinkedHashMap<>();source.forEach((key,value)->result.put(key,normalizeValue(value)));return result;}
+ private Object normalizeValue(Object value){
+  try{
+   if(value instanceof java.sql.Array array){Object raw=array.getArray();return raw instanceof Object[] values?Arrays.asList(values):raw;}
+   if(value!=null&&value.getClass().getName().equals("org.postgresql.util.PGobject")){String raw=(String)value.getClass().getMethod("getValue").invoke(value);return raw==null?null:json.readTree(raw);}
+   return value;
+  }catch(Exception exception){throw new IllegalStateException("Cannot normalize database result",exception);}
+ }
  private ProposalRow lockProposal(UUID id){List<ProposalRow> rows=jdbc.query("""
   SELECT p.status,p.proposed_by,p.alert_id,a.status,t.id,t.card_id,ca.customer_id FROM manager_approval_proposals p JOIN fraud_alerts a ON a.id=p.alert_id JOIN transactions t ON t.id=a.transaction_id JOIN cards ca ON ca.card_id=t.card_id WHERE p.id=? FOR UPDATE OF p,a,t,ca
   """,(r,n)->new ProposalRow(r.getString(1),(UUID)r.getObject(2),(UUID)r.getObject(3),r.getString(4),(UUID)r.getObject(5),r.getString(6),r.getString(7)),id);if(rows.isEmpty())throw new ResourceNotFoundException("Proposal not found");return rows.get(0);}

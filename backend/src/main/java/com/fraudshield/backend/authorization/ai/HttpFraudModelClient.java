@@ -28,6 +28,7 @@ public class HttpFraudModelClient implements FraudModelClient {
     public HttpFraudModelClient(AiClientProperties properties, ObjectMapper objectMapper) {
         this(properties, objectMapper, HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(properties.timeoutMs()))
+                .version(HttpClient.Version.HTTP_1_1)
                 .build());
     }
 

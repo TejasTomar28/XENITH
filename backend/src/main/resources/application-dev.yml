@@ -1,4 +1,6 @@
 fraudshield:
+  demo-data:
+    enabled: ${DEV_DEMO_DATA_ENABLED:false}
   dev-users:
     enabled: ${DEV_USERS_ENABLED:false}
     cardholder-username: ${DEV_CARDHOLDER_USERNAME:cardholder}

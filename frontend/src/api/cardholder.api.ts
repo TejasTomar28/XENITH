@@ -47,10 +47,17 @@ export const cardholderApi = {
     stepUpId: string,
     data: StepUpResponseRequest
   ): Promise<StepUpResponseResult> => {
-    const response = await apiClient.post<StepUpResponseResult>(
+    const response = await apiClient.post<any>(
       `/v1/me/step-ups/${stepUpId}/responses`,
       data
     );
-    return response.data;
+    const confirmed = response.data.status === 'CONFIRMED';
+    return {
+      step_up_id: response.data.step_up_id,
+      txn_id: response.data.txn_id || '',
+      status: confirmed ? 'APPROVED' : 'BLOCKED',
+      card_status: confirmed ? 'ACTIVE' : 'BLOCKED',
+      display_reason: confirmed ? 'Transaction confirmed' : 'Transaction denied and card blocked',
+    };
   },
 };

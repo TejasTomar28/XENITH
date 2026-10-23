@@ -35,16 +35,16 @@ export const ManagerDashboard: React.FC = () => {
     refetchInterval: autoRefresh ? 30000 : false,
   });
 
-  const totalTxns = metrics?.total_transactions || 1247;
-  const blockRate = metrics ? (metrics.block_rate * 100).toFixed(1) : '3.2';
-  const stepUpRate = metrics ? (metrics.step_up_rate * 100).toFixed(1) : '8.1';
+  const totalTxns = metrics?.total_transactions ?? 0;
+  const blockRate = ((metrics?.block_rate ?? 0) * 100).toFixed(1);
+  const stepUpRate = ((metrics?.step_up_rate ?? 0) * 100).toFixed(1);
   const openAlerts = metrics
     ? metrics.open_alerts_by_priority.HIGH + metrics.open_alerts_by_priority.MEDIUM
-    : 14;
-  const slaBreaches = metrics?.sla_breaches ?? 3;
+    : 0;
+  const slaBreaches = metrics?.sla_breaches ?? 0;
   const fpRate = metrics?.false_positive_rate !== null && metrics?.false_positive_rate !== undefined
     ? (metrics.false_positive_rate * 100).toFixed(1)
-    : '12.5';
+    : 'N/A';
 
   return (
     <Box>

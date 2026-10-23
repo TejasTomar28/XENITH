@@ -28,7 +28,7 @@ export const RuleConfigPage: React.FC = () => {
       settings,
       comment,
     }: {
-      settings: { key: string; value: unknown }[];
+      settings: Record<string, unknown>;
       comment: string;
     }) =>
       managerApi.updateRuleConfiguration({

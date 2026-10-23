@@ -2,7 +2,6 @@ import React from 'react';
 import { Grid } from '@mui/material';
 import { BarChart } from '@mui/x-charts/BarChart';
 import { PieChart } from '@mui/x-charts/PieChart';
-import { LineChart } from '@mui/x-charts/LineChart';
 import { ChartCard } from '../../../shared/components/ChartCard';
 import { ManagerDashboardMetrics } from '../../../types/manager';
 
@@ -12,11 +11,7 @@ export interface DashboardChartsProps {
 }
 
 export const DashboardCharts: React.FC<DashboardChartsProps> = ({ metrics, loading = false }) => {
-  const decisions = metrics?.transactions_by_decision || {
-    APPROVE: 1106,
-    STEP_UP: 101,
-    BLOCK: 40,
-  };
+  const decisions = metrics?.transactions_by_decision || { APPROVE: 0, STEP_UP: 0, BLOCK: 0 };
 
   const decisionPieData = [
     { id: 0, value: decisions.APPROVE, label: 'Approved', color: '#2e7d32' },
@@ -24,41 +19,22 @@ export const DashboardCharts: React.FC<DashboardChartsProps> = ({ metrics, loadi
     { id: 2, value: decisions.BLOCK, label: 'Blocked', color: '#d32f2f' },
   ];
 
-  const alertsByPriority = metrics?.open_alerts_by_priority || { HIGH: 5, MEDIUM: 9 };
+  const alertsByPriority = metrics?.open_alerts_by_priority || { HIGH: 0, MEDIUM: 0 };
 
-  const topReasons = (metrics?.top_reason_codes || [
-    { reason_code: 'IMPOSSIBLE_TRAVEL', count: 18 },
-    { reason_code: 'AMOUNT_SPIKE', count: 14 },
-    { reason_code: 'HIGH_RISK_GEO', count: 12 },
-    { reason_code: 'NEW_MERCHANT', count: 9 },
-    { reason_code: 'ODD_HOURS', count: 7 },
-  ]).slice(0, 5);
+  const topReasons = (metrics?.top_reason_codes || []).slice(0, 5);
 
   return (
     <Grid container spacing={3}>
-      {/* 1. Transactions by Decision Over Time (Stacked Bar) */}
+      {/* 1. Transactions by Decision for the selected period (the API returns period totals, not a daily series) */}
       <Grid item xs={12} md={6}>
-        <ChartCard title="Transactions by Decision Trend" loading={loading} height={280}>
+        <ChartCard title="Transactions by Decision" loading={loading} height={280}>
           <BarChart
-            xAxis={[{ scaleType: 'band', data: ['Oct 20', 'Oct 21', 'Oct 22', 'Oct 23'] }]}
+            xAxis={[{ scaleType: 'band', data: ['Approved', 'Step-Up', 'Blocked'] }]}
             series={[
               {
-                data: [940, 1010, 1080, decisions.APPROVE],
-                label: 'Approved',
-                stack: 'decision',
-                color: '#2e7d32',
-              },
-              {
-                data: [78, 85, 94, decisions.STEP_UP],
-                label: 'Step-Up',
-                stack: 'decision',
-                color: '#ed6c02',
-              },
-              {
-                data: [25, 30, 35, decisions.BLOCK],
-                label: 'Blocked',
-                stack: 'decision',
-                color: '#d32f2f',
+                data: [decisions.APPROVE, decisions.STEP_UP, decisions.BLOCK],
+                label: 'Transactions',
+                color: '#1B5E8F',
               },
             ]}
             height={260}
@@ -123,15 +99,15 @@ export const DashboardCharts: React.FC<DashboardChartsProps> = ({ metrics, loadi
         </ChartCard>
       </Grid>
 
-      {/* 5. SLA Breach Trend */}
+      {/* 5. SLA status of currently open alerts */}
       <Grid item xs={12} md={4}>
-        <ChartCard title="SLA Breaches Trend (Daily)" loading={loading} height={280}>
-          <LineChart
-            xAxis={[{ data: [19, 20, 21, 22, 23], label: 'Day' }]}
+        <ChartCard title="Open Alerts vs SLA Breaches" loading={loading} height={280}>
+          <BarChart
+            xAxis={[{ scaleType: 'band', data: ['Open alerts', 'SLA breached'] }]}
             series={[
               {
-                data: [1, 2, 4, 2, metrics?.sla_breaches || 3],
-                label: 'Breaches',
+                data: [alertsByPriority.HIGH + alertsByPriority.MEDIUM, metrics?.sla_breaches ?? 0],
+                label: 'Alerts',
                 color: '#b71c1c',
               },
             ]}

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import os
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 try:
-    from fastapi import FastAPI, HTTPException
+    from fastapi import Depends, FastAPI, Header, HTTPException
     from pydantic import BaseModel, ConfigDict, Field, field_validator
 except ImportError as exc:  # pragma: no cover - dependency-gated runtime
     raise RuntimeError("Install ai-service/requirements.txt to run the HTTP service") from exc
@@ -59,6 +60,12 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="FraudShield AI Service", version="1.0.0", lifespan=lifespan)
 
 
+def require_internal_key(x_internal_api_key: str | None = Header(default=None)) -> None:
+    configured = os.getenv("AI_INTERNAL_API_KEY", "")
+    if not configured or x_internal_api_key is None or not secrets.compare_digest(configured, x_internal_api_key):
+        raise HTTPException(status_code=401, detail="Invalid internal service credential")
+
+
 @app.get("/health")
 def health() -> dict[str, str | None]:
     try:
@@ -69,7 +76,7 @@ def health() -> dict[str, str | None]:
 
 
 @app.post("/internal/v1/predictions", response_model=PredictionResponse)
-def predict(request: FeatureRequest) -> PredictionResponse:
+def predict(request: FeatureRequest, _: None = Depends(require_internal_key)) -> PredictionResponse:
     try:
         return PredictionResponse(**get_model_bundle(_artifact_dir()).predict(request.features))
     except ModelArtifactError as exc:

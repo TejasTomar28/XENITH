@@ -31,7 +31,7 @@ import { RuleConfiguration } from '../../../types/manager';
 
 export interface RuleConfigFormProps {
   initialConfig: RuleConfiguration;
-  onSave: (settings: { key: string; value: unknown }[], comment: string) => void;
+  onSave: (settings: Record<string, unknown>, comment: string) => void;
   loading?: boolean;
 }
 
@@ -42,69 +42,69 @@ export const RuleConfigForm: React.FC<RuleConfigFormProps> = ({
 }) => {
   // Extract setting values with defaults
   const getInitial = (key: string, def: any) => {
-    const s = initialConfig.settings.find((item) => item.key === key);
-    return s !== undefined ? s.value : def;
+    const value = initialConfig.settings[key];
+    return value !== undefined ? value : def;
   };
 
   // State variables for all form groups
   const [velocity10mBurst, setVelocity10mBurst] = useState<number>(() =>
-    Number(getInitial('velocity_10m_burst_threshold', 5))
+    Number(getInitial('velocity_burst_count', 5))
   );
   const [velocity10mHigh, setVelocity10mHigh] = useState<number>(() =>
-    Number(getInitial('velocity_10m_high_threshold', 3))
+    Number(getInitial('high_velocity_min_count', 3))
   );
   const [velocity10mWindow, setVelocity10mWindow] = useState<number>(() =>
-    Number(getInitial('velocity_10m_window_minutes', 10))
+    Number(getInitial('velocity_window_minutes', 10))
   );
 
   const [amountSpikeMult, setAmountSpikeMult] = useState<number>(() =>
     Number(getInitial('amount_spike_multiplier', 5))
   );
   const [amountSpikeMin, setAmountSpikeMin] = useState<number>(() =>
-    Number(getInitial('amount_spike_min_amount', 10000))
+    Number(getInitial('amount_spike_minimum', 10000))
   );
   const [amountNoHistoryMin, setAmountNoHistoryMin] = useState<number>(() =>
-    Number(getInitial('amount_no_history_min_amount', 50000))
+    Number(getInitial('amount_spike_no_history_minimum', 50000))
   );
 
   const [speedKmph, setSpeedKmph] = useState<number>(() =>
-    Number(getInitial('impossible_travel_speed_kmph', 800))
+    Number(getInitial('impossible_travel_threshold_kmph', 800))
   );
   const [speedLookback, setSpeedLookback] = useState<number>(() =>
-    Number(getInitial('impossible_travel_window_hours', 6))
+    Number(getInitial('impossible_travel_lookback_hours', 6))
   );
 
   const [oddHourStart, setOddHourStart] = useState<number>(() =>
-    Number(getInitial('odd_hours_start_hour', 0))
+    Number(getInitial('odd_hour_start_inclusive', 0))
   );
   const [oddHourEnd, setOddHourEnd] = useState<number>(() =>
-    Number(getInitial('odd_hours_end_hour', 5))
+    Number(getInitial('odd_hour_end_inclusive', 4))
   );
   const [oddHourMin, setOddHourMin] = useState<number>(() =>
-    Number(getInitial('odd_hours_min_amount', 20000))
+    Number(getInitial('odd_hour_minimum', 20000))
   );
 
   const [newMerchantDays, setNewMerchantDays] = useState<number>(() =>
     Number(getInitial('new_merchant_lookback_days', 90))
   );
   const [newMerchantMin, setNewMerchantMin] = useState<number>(() =>
-    Number(getInitial('new_merchant_min_amount', 25000))
+    Number(getInitial('new_merchant_minimum', 25000))
   );
 
   const [mccList, setMccList] = useState<string[]>(() => {
-    const raw = getInitial('high_risk_mcc_list', ['4829', '5967', '6051', '7995']);
+    const raw = getInitial('high_risk_mccs', ['4829', '5967', '6051', '7995']);
     return Array.isArray(raw) ? raw : ['4829', '5967', '6051', '7995'];
   });
   const [newMccInput, setNewMccInput] = useState('');
 
   const [multipleRedFlagsMin, setMultipleRedFlagsMin] = useState<number>(() =>
-    Number(getInitial('multiple_red_flags_min_triggers', 3))
+    Number(getInitial('multiple_red_flags_count', 3))
   );
   const [stepUpExpiryMin, setStepUpExpiryMin] = useState<number>(() =>
     Number(getInitial('step_up_expiry_minutes', 15))
   );
   const [makerCheckerThreshold, setMakerCheckerThreshold] = useState<number>(() =>
-    Number(getInitial('maker_checker_threshold_amount', 100000))
+    Number(getInitial('maker_checker_limit', 100000))
   );
 
   const [aiStepUpThreshold, setAiStepUpThreshold] = useState<number>(() =>
@@ -134,27 +134,28 @@ export const RuleConfigForm: React.FC<RuleConfigFormProps> = ({
     setMccList(mccList.filter((c) => c !== code));
   };
 
-  const buildCurrentSettings = () => [
-    { key: 'velocity_10m_burst_threshold', value: velocity10mBurst },
-    { key: 'velocity_10m_high_threshold', value: velocity10mHigh },
-    { key: 'velocity_10m_window_minutes', value: velocity10mWindow },
-    { key: 'amount_spike_multiplier', value: amountSpikeMult },
-    { key: 'amount_spike_min_amount', value: amountSpikeMin },
-    { key: 'amount_no_history_min_amount', value: amountNoHistoryMin },
-    { key: 'impossible_travel_speed_kmph', value: speedKmph },
-    { key: 'impossible_travel_window_hours', value: speedLookback },
-    { key: 'odd_hours_start_hour', value: oddHourStart },
-    { key: 'odd_hours_end_hour', value: oddHourEnd },
-    { key: 'odd_hours_min_amount', value: oddHourMin },
-    { key: 'new_merchant_lookback_days', value: newMerchantDays },
-    { key: 'new_merchant_min_amount', value: newMerchantMin },
-    { key: 'high_risk_mcc_list', value: mccList },
-    { key: 'multiple_red_flags_min_triggers', value: multipleRedFlagsMin },
-    { key: 'step_up_expiry_minutes', value: stepUpExpiryMin },
-    { key: 'maker_checker_threshold_amount', value: makerCheckerThreshold },
-    { key: 'ai_step_up_threshold', value: aiStepUpThreshold },
-    { key: 'ai_block_threshold', value: aiBlockThreshold },
-  ];
+  const buildCurrentSettings = () => ({
+    ...initialConfig.settings,
+    velocity_burst_count: velocity10mBurst,
+    high_velocity_min_count: velocity10mHigh,
+    velocity_window_minutes: velocity10mWindow,
+    amount_spike_multiplier: amountSpikeMult,
+    amount_spike_minimum: amountSpikeMin,
+    amount_spike_no_history_minimum: amountNoHistoryMin,
+    impossible_travel_threshold_kmph: speedKmph,
+    impossible_travel_lookback_hours: speedLookback,
+    odd_hour_start_inclusive: oddHourStart,
+    odd_hour_end_inclusive: oddHourEnd,
+    odd_hour_minimum: oddHourMin,
+    new_merchant_lookback_days: newMerchantDays,
+    new_merchant_minimum: newMerchantMin,
+    high_risk_mccs: mccList,
+    multiple_red_flags_count: multipleRedFlagsMin,
+    step_up_expiry_minutes: stepUpExpiryMin,
+    maker_checker_limit: makerCheckerThreshold,
+    ai_step_up_threshold: aiStepUpThreshold,
+    ai_block_threshold: aiBlockThreshold,
+  });
 
   const handleFinalSubmit = () => {
     setCommentTouched(true);
@@ -521,11 +522,11 @@ export const RuleConfigForm: React.FC<RuleConfigFormProps> = ({
                 </TableRow>
               </TableHead>
               <TableBody>
-                {buildCurrentSettings().map((s) => (
-                  <TableRow key={s.key}>
-                    <TableCell sx={{ fontFamily: 'monospace' }}>{s.key}</TableCell>
+                {Object.entries(buildCurrentSettings()).map(([key, value]) => (
+                  <TableRow key={key}>
+                    <TableCell sx={{ fontFamily: 'monospace' }}>{key}</TableCell>
                     <TableCell sx={{ fontWeight: 600 }}>
-                      {Array.isArray(s.value) ? s.value.join(', ') : String(s.value)}
+                      {Array.isArray(value) ? value.join(', ') : String(value)}
                     </TableCell>
                   </TableRow>
                 ))}

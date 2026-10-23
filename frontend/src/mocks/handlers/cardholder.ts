@@ -407,10 +407,10 @@ export const cardholderHandlers = [
       }
       return HttpResponse.json({
         step_up_id: stepUpId,
-        txn_id: stepUp.txn_id,
-        status: 'APPROVED',
-        card_status: 'ACTIVE',
-        display_reason: 'Transaction confirmed by cardholder',
+        status: 'CONFIRMED',
+        expires_at: stepUp.expires_at,
+        resolved_at: new Date().toISOString(),
+        attempt_count: 1,
       });
     } else {
       // NOT_ME: blocks transaction and card
@@ -424,10 +424,10 @@ export const cardholderHandlers = [
       }
       return HttpResponse.json({
         step_up_id: stepUpId,
-        txn_id: stepUp.txn_id,
-        status: 'BLOCKED',
-        card_status: 'BLOCKED',
-        display_reason: 'Transaction denied and card blocked permanently',
+        status: 'DENIED',
+        expires_at: stepUp.expires_at,
+        resolved_at: new Date().toISOString(),
+        attempt_count: 0,
       });
     }
   }),

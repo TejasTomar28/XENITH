@@ -35,21 +35,24 @@ public class AlertReviewService {
         long total=jdbc.queryForObject("SELECT count(*) FROM fraud_alerts a"+where,Long.class,args.toArray());
         args.add(size);args.add(page*size);
         var items=jdbc.queryForList("""
-            SELECT a.id alert_id,t.txn_id,t.amount,a.priority,a.status,a.assigned_analyst_id,a.sla_due_at,a.created_at,
+            SELECT a.id alert_id,t.txn_id,t.amount,a.priority alert_priority,a.status,u.username claimed_by,a.sla_due_at,a.created_at,
                    (a.status NOT IN ('CONFIRMED_FRAUD','FALSE_POSITIVE') AND a.sla_due_at<CURRENT_TIMESTAMP) sla_breached
             FROM fraud_alerts a JOIN transactions t ON t.id=a.transaction_id
+            LEFT JOIN app_users u ON u.id=a.assigned_analyst_id
             """+where+" ORDER BY CASE a.priority WHEN 'HIGH' THEN 0 ELSE 1 END,a.sla_due_at,a.id LIMIT ? OFFSET ?",args.toArray());
         return new Page<>(items.stream().map(this::normalize).toList(),page,size,total);
     }
 
     public Map<String,Object> detail(UUID alertId){
         List<Map<String,Object>> found=jdbc.queryForList("""
-            SELECT a.id alert_id,a.priority,a.status,a.assigned_analyst_id,a.sla_due_at,a.created_at,a.closed_at,a.outcome_comment,
-              t.txn_id,t.txn_ts,t.amount,t.currency,t.merchant_id,t.mcc,t.channel,t.txn_city,t.txn_country,t.status transaction_status,
+            SELECT a.id alert_id,a.priority alert_priority,a.status,u.username claimed_by,a.sla_due_at,a.created_at,a.closed_at,a.outcome_comment,
+              t.txn_id,t.card_id,t.txn_ts,t.amount,t.currency,t.merchant_id,m.merchant_name,t.mcc,t.channel,t.txn_city,t.txn_country,t.status transaction_status,
+              t.rule_decision,t.original_decision,ca.last_four,ca.card_type,ca.card_status,ca.expiry_date,ca.daily_limit,ca.international_enabled,
               f.velocity_10m,f.velocity_24h,f.approved_today,f.avg_amount_30d,f.speed_kmph,f.new_merchant,f.rule_risk_score,
               p.fraud_score,p.model_status,p.model_version,p.top_factors,
               ARRAY(SELECT reason_code FROM transaction_reason_codes r WHERE r.transaction_id=t.id ORDER BY sequence_no) reason_codes
-            FROM fraud_alerts a JOIN transactions t ON t.id=a.transaction_id
+            FROM fraud_alerts a JOIN transactions t ON t.id=a.transaction_id JOIN cards ca ON ca.card_id=t.card_id
+            JOIN merchants m ON m.merchant_id=t.merchant_id LEFT JOIN app_users u ON u.id=a.assigned_analyst_id
             LEFT JOIN transaction_features f ON f.transaction_id=t.id LEFT JOIN model_predictions p ON p.transaction_id=t.id WHERE a.id=?
             """,alertId); if(found.isEmpty())throw new ResourceNotFoundException("Alert not found");return normalize(found.get(0));
     }
@@ -85,7 +88,7 @@ public class AlertReviewService {
 
     private void close(UUID id,String status,String comment,OffsetDateTime at){jdbc.update("UPDATE fraud_alerts SET status=?,closed_at=?,outcome_comment=?,version=version+1 WHERE id=?",status,at,comment,id);}
     private void notifyFalsePositive(AlertRow row,OffsetDateTime at){jdbc.update("INSERT INTO notification_outbox(id,customer_id,transaction_id,notification_type,payload,created_at) VALUES (?,?,?,'FALSE_POSITIVE_RESOLVED','{}'::jsonb,?)",UUID.randomUUID(),row.customerId(),row.transactionId(),at);}
-    public Map<String,Object> proposal(UUID id){List<Map<String,Object>> rows=jdbc.queryForList("SELECT id proposal_id,alert_id,proposed_by,proposed_at,proposal_comment,status,reviewed_by,reviewed_at,review_comment FROM manager_approval_proposals WHERE id=?",id);if(rows.isEmpty())throw new ResourceNotFoundException("Proposal not found");return normalize(rows.get(0));}
+    public Map<String,Object> proposal(UUID id){List<Map<String,Object>> rows=jdbc.queryForList("SELECT p.id proposal_id,p.alert_id,maker.username proposed_by,p.proposed_at,p.proposal_comment comment,p.status,checker.username checked_by,p.reviewed_at checked_at,p.review_comment checker_comment FROM manager_approval_proposals p JOIN app_users maker ON maker.id=p.proposed_by LEFT JOIN app_users checker ON checker.id=p.reviewed_by WHERE p.id=?",id);if(rows.isEmpty())throw new ResourceNotFoundException("Proposal not found");return normalize(rows.get(0));}
     private Map<String,Object> normalize(Map<String,Object> source){
         Map<String,Object> result=new LinkedHashMap<>();source.forEach((key,value)->result.put(key,normalizeValue(value)));return result;
     }

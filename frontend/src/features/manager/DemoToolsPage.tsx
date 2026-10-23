@@ -22,14 +22,14 @@ export const DemoToolsPage: React.FC = () => {
   const { enqueueSnackbar } = useSnackbar();
 
   const [txnPayload, setTxnPayload] = useState({
-    txn_id: `T${Math.floor(200000000 + Math.random() * 99999999)}`,
-    card_id: 'C1007',
-    txn_ts: new Date().toISOString(),
-    amount: '15000.00',
+    txn_id: `T${String(Math.floor(Math.random() * 1_000_000_000)).padStart(9, '0')}`,
+    card_id: 'CARD1',
+    txn_ts: new Date(Date.now() + 330 * 60_000).toISOString().replace('Z', '+05:30'),
+    amount: '100.00',
     currency: 'INR',
-    merchant_id: 'M00451',
-    mcc: '5732',
-    channel: 'ECOM',
+    merchant_id: 'MER1',
+    mcc: '5411',
+    channel: 'POS',
     txn_city: 'Mumbai',
     txn_country: 'IN',
   });
@@ -41,25 +41,18 @@ export const DemoToolsPage: React.FC = () => {
     setLoading(true);
     setSimResult(null);
     try {
-      // In real or mock mode, this tests gateway endpoint
-      const res = await apiClient.post('/v1/authorisations', txnPayload);
+      const payload = {
+        ...txnPayload,
+        txn_ts: new Date(Date.now() + 330 * 60_000).toISOString().replace('Z', '+05:30'),
+      };
+      const res = await apiClient.post('/v1/manager/demo/authorisations', payload);
       setSimResult(res.data);
       enqueueSnackbar(`Transaction evaluated: Decision is ${res.data.decision}`, {
         variant: res.data.decision === 'APPROVE' ? 'success' : 'warning',
       });
     } catch (err: any) {
-      // If authorisations route is gateway-only or mock returns result
-      setSimResult({
-        decision: 'STEP_UP',
-        rule_risk_score: 30,
-        reason_codes: ['AMOUNT_SPIKE'],
-        status: 'STEP_UP_PENDING',
-        fraud_score: 0.72,
-        model_status: 'AVAILABLE',
-      });
-      enqueueSnackbar('Simulated authorization evaluated (Mock engine fallback).', {
-        variant: 'info',
-      });
+      setSimResult({ error: err.message || 'Authorization failed' });
+      enqueueSnackbar(err.message || 'Authorization failed.', { variant: 'error' });
     } finally {
       setLoading(false);
     }
@@ -96,6 +89,24 @@ export const DemoToolsPage: React.FC = () => {
             <Divider />
             <CardContent>
               <Grid container spacing={2}>
+                <Grid item xs={12}>
+                  <TextField
+                    select
+                    label="Demo outcome"
+                    fullWidth
+                    defaultValue="APPROVE"
+                    onChange={(e) => {
+                      const common = { txn_id: `T${String(Math.floor(Math.random() * 1_000_000_000)).padStart(9, '0')}` };
+                      if (e.target.value === 'BLOCK') setTxnPayload({ ...txnPayload, ...common, amount: '125000.00', merchant_id: 'MER_BLOCK', mcc: '5411', channel: 'ECOM' });
+                      else if (e.target.value === 'STEP_UP') setTxnPayload({ ...txnPayload, ...common, amount: '20000.00', merchant_id: 'MER_RISK', mcc: '7995', channel: 'ECOM' });
+                      else setTxnPayload({ ...txnPayload, ...common, amount: '100.00', merchant_id: 'MER1', mcc: '5411', channel: 'POS' });
+                    }}
+                  >
+                    <MenuItem value="APPROVE">APPROVE — low-risk purchase</MenuItem>
+                    <MenuItem value="STEP_UP">STEP_UP — high-risk MCC</MenuItem>
+                    <MenuItem value="BLOCK">BLOCK — blocklisted merchant</MenuItem>
+                  </TextField>
+                </Grid>
                 <Grid item xs={12} sm={6}>
                   <TextField
                     label="Transaction ID"
@@ -184,7 +195,9 @@ export const DemoToolsPage: React.FC = () => {
                 <Box>
                   <Alert
                     severity={
-                      simResult.decision === 'APPROVE'
+                      simResult.error
+                        ? 'error'
+                        : simResult.decision === 'APPROVE'
                         ? 'success'
                         : simResult.decision === 'STEP_UP'
                         ? 'warning'
@@ -192,8 +205,10 @@ export const DemoToolsPage: React.FC = () => {
                     }
                     sx={{ mb: 2 }}
                   >
-                    Engine Decision: <strong>{simResult.decision}</strong> &bull; Status:{' '}
-                    <strong>{simResult.status}</strong>
+                    {simResult.error ? <strong>{simResult.error}</strong> : <>
+                      Engine Decision: <strong>{simResult.decision}</strong> &bull; Status:{' '}
+                      <strong>{simResult.status}</strong>
+                    </>}
                   </Alert>
 
                   <Typography variant="subtitle2" fontWeight={600} gutterBottom>

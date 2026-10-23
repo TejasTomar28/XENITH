@@ -1,4 +1,73 @@
-# FraudShield orchestration placeholder.
-# Frontend, backend, AI service, and PostgreSQL will be configured later.
-# There are no runnable services at this milestone.
-services: {}
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fraudshield}
+      POSTGRES_USER: ${POSTGRES_USER:-fraudshield}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - fraudshield-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  ai-service:
+    build: ./ai-service
+    environment:
+      AI_INTERNAL_API_KEY: ${AI_INTERNAL_API_KEY}
+      FRAUDSHIELD_MODEL_DIR: /app/artifacts
+    ports:
+      - "${AI_SERVICE_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  backend:
+    build: ./backend
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-fraudshield}
+      DB_USERNAME: ${POSTGRES_USER:-fraudshield}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      GATEWAY_API_KEY: ${GATEWAY_API_KEY}
+      AI_INTERNAL_API_KEY: ${AI_INTERNAL_API_KEY}
+      AI_SERVICE_URL: http://ai-service:8000/internal/v1/predictions
+      AI_TIMEOUT_MS: 150
+      FRONTEND_ORIGINS: http://localhost:${FRONTEND_PORT:-5173}
+      DEV_USERS_ENABLED: "true"
+      DEV_DEMO_DATA_ENABLED: "true"
+      DEV_CARDHOLDER_USERNAME: ${DEV_CARDHOLDER_USERNAME:-cardholder1}
+      DEV_ANALYST_USERNAME: ${DEV_ANALYST_USERNAME:-analyst1}
+      DEV_MANAGER_USERNAME: ${DEV_MANAGER_USERNAME:-manager1}
+      DEV_CARDHOLDER_PASSWORD: ${DEV_CARDHOLDER_PASSWORD}
+      DEV_ANALYST_PASSWORD: ${DEV_ANALYST_PASSWORD}
+      DEV_MANAGER_PASSWORD: ${DEV_MANAGER_PASSWORD}
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ai-service:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: /api
+        VITE_USE_MOCKS: "false"
+        VITE_ENABLE_DEMO_TOOLS: "true"
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+    depends_on:
+      - backend
+
+volumes:
+  fraudshield-postgres:

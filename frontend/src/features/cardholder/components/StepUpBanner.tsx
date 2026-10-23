@@ -93,23 +93,15 @@ export const StepUpBanner: React.FC = () => {
   };
 
   const handleNotMe = (item: PendingStepUp) => {
-    const otp = otpMap[item.step_up_id] || '';
-    if (otp.length < 6) {
-      enqueueSnackbar('Please enter the 6-digit OTP received for identity validation.', {
-        variant: 'warning',
-      });
-      return;
-    }
     setNotMeTarget(item);
   };
 
   const confirmNotMeExecution = () => {
     if (!notMeTarget) return;
-    const otp = otpMap[notMeTarget.step_up_id] || '';
     responseMutation.mutate({
       stepUpId: notMeTarget.step_up_id,
       response: 'NOT_ME',
-      otp,
+      otp: '',
     });
   };
 
@@ -207,8 +199,8 @@ export const StepUpBanner: React.FC = () => {
                 </Box>
 
                 <Alert severity="info" sx={{ mb: 2.5 }}>
-                  A simulated 6-digit one-time passcode has been generated for your session (e.g. enter{' '}
-                  <strong>123456</strong> for testing).
+                  A simulated 6-digit one-time passcode was written to the restricted backend log.
+                  Ask the demo operator for the value associated with this transaction.
                 </Alert>
 
                 <Box

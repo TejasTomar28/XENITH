@@ -6,6 +6,7 @@ import {
   RuleConfiguration,
 } from '../../types/manager';
 import { mockAlerts } from './analyst';
+import { toWireAlert, toWireAudit, toWireEvidence, toWireProposal, toWireProposalListItem } from '../wire';
 
 export let mockManagerProposalsList: FalsePositiveProposalItem[] = [
   {
@@ -118,31 +119,40 @@ export let mockAuditEvents: AuditEvent[] = Array.from({ length: 20 }).map((_, id
 export let currentRuleConfig: RuleConfiguration = {
   version: 'v1.4.2',
   updated_at: new Date(Date.now() - 1000 * 60 * 60 * 24 * 3).toISOString(),
-  settings: [
-    { key: 'velocity_10m_burst_threshold', value: 5 },
-    { key: 'velocity_10m_high_threshold', value: 3 },
-    { key: 'velocity_10m_window_minutes', value: 10 },
-    { key: 'velocity_24h_window_hours', value: 24 },
-    { key: 'amount_spike_multiplier', value: 5 },
-    { key: 'amount_spike_min_amount', value: 10000 },
-    { key: 'amount_no_history_min_amount', value: 50000 },
-    { key: 'impossible_travel_speed_kmph', value: 800 },
-    { key: 'impossible_travel_window_hours', value: 6 },
-    { key: 'odd_hours_start_hour', value: 0 },
-    { key: 'odd_hours_end_hour', value: 5 },
-    { key: 'odd_hours_min_amount', value: 20000 },
-    { key: 'new_merchant_lookback_days', value: 90 },
-    { key: 'new_merchant_min_amount', value: 25000 },
-    { key: 'high_risk_mcc_list', value: ['4829', '5967', '6051', '7995'] },
-    { key: 'multiple_red_flags_min_triggers', value: 3 },
-    { key: 'step_up_expiry_minutes', value: 15 },
-    { key: 'maker_checker_threshold_amount', value: 100000 },
-    { key: 'ai_step_up_threshold', value: 0.7 },
-    { key: 'ai_block_threshold', value: 0.9 },
-  ],
+  settings: {
+    velocity_window_minutes: 10, velocity_24h_window_hours: 24, velocity_burst_count: 5,
+    high_velocity_min_count: 3, high_velocity_max_count: 4, amount_average_lookback_days: 30,
+    amount_spike_multiplier: 5, amount_spike_minimum: 10000, amount_spike_no_history_minimum: 50000,
+    impossible_travel_threshold_kmph: 800, impossible_travel_lookback_hours: 6,
+    high_velocity_points: 25, amount_spike_points: 30, high_risk_geo_points: 25,
+    high_risk_mcc_points: 15, odd_hour_points: 15, new_merchant_points: 20,
+    high_risk_mccs: ['4829', '5967', '6051', '7995'], odd_hour_start_inclusive: 0,
+    odd_hour_end_inclusive: 4, odd_hour_minimum: 20000, new_merchant_lookback_days: 90,
+    new_merchant_minimum: 25000, multiple_red_flags_count: 3, alert_high_amount: 50000,
+    alert_high_sla_minutes: 30, alert_medium_sla_minutes: 240, step_up_expiry_minutes: 15,
+    maker_checker_limit: 100000, ai_step_up_threshold: 0.7, ai_block_threshold: 0.9,
+  },
 };
 
 export const managerHandlers = [
+  http.post('*/api/v1/manager/demo/authorisations', async ({ request }) => {
+    const body = (await request.json()) as { txn_id: string; merchant_id: string; mcc: string };
+    const block = body.merchant_id === 'MER_BLOCK';
+    const stepUp = !block && ['4829', '5967', '6051', '7995'].includes(body.mcc);
+    return HttpResponse.json({
+      txn_id: body.txn_id,
+      decision: block ? 'BLOCK' : stepUp ? 'STEP_UP' : 'APPROVE',
+      reason_codes: block ? ['MERCHANT_BLACKLISTED'] : stepUp ? ['HIGH_RISK_MCC'] : [],
+      rule_risk_score: block ? 100 : stepUp ? 15 : 0,
+      status: block ? 'BLOCKED' : stepUp ? 'STEP_UP_PENDING' : 'APPROVED',
+      alert_id: null,
+      processed_at: new Date().toISOString(),
+      fraud_score: null,
+      top_factors: [],
+      model_status: 'MODEL_UNAVAILABLE',
+    });
+  }),
+
   http.get('*/api/v1/manager/dashboard', () => {
     const dashboard: ManagerDashboardMetrics = {
       from: null,
@@ -184,7 +194,7 @@ export const managerHandlers = [
     }
 
     return HttpResponse.json({
-      items: filtered,
+      items: filtered.map(toWireProposalListItem),
       page: 0,
       size: filtered.length,
       total: filtered.length,
@@ -201,8 +211,8 @@ export const managerHandlers = [
     }
 
     return HttpResponse.json({
-      proposal: item.proposal,
-      evidence: {
+      proposal: toWireProposal(item.proposal),
+      evidence: toWireEvidence({
         alert: item.alert,
         transaction: {
           txn_id: item.alert.txn_id,
@@ -246,7 +256,7 @@ export const managerHandlers = [
         model_status: 'AVAILABLE',
         model_version: 'xgb-v1.2',
         proposal: item.proposal,
-      },
+      }),
     });
   }),
 
@@ -294,8 +304,8 @@ export const managerHandlers = [
       item.alert.status = body.decision === 'APPROVE' ? 'FALSE_POSITIVE' : 'CONFIRMED_FRAUD';
 
       return HttpResponse.json({
-        proposal: item.proposal,
-        alert: item.alert,
+        proposal: toWireProposal(item.proposal),
+        alert: toWireAlert(item.alert),
       });
     }
   ),
@@ -311,7 +321,7 @@ export const managerHandlers = [
     );
 
     return HttpResponse.json({
-      items: filtered.length > 0 ? filtered : mockAuditEvents,
+      items: (filtered.length > 0 ? filtered : mockAuditEvents).map(toWireAudit),
       page: 0,
       size: 20,
       total: mockAuditEvents.length,

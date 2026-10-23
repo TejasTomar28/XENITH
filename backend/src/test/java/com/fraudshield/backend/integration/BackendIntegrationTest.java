@@ -648,13 +648,13 @@ class BackendIntegrationTest {
         String token = login("cardholder", CARDHOLDER_PASSWORD);
 
         mockMvc.perform(get("/api/v1/me/cards").header(HttpHeaders.AUTHORIZATION,"Bearer "+token))
-                .andExpect(status().isOk()).andExpect(jsonPath("$[0].masked_card_number").value("XXXXXXXXXXXX2222"));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].masked_card_number").value("XXXXXXXXXXXX2222"));
         mockMvc.perform(get("/api/v1/me/transactions").header(HttpHeaders.AUTHORIZATION,"Bearer "+token))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.total").value(1));
         mockMvc.perform(get("/api/v1/me/transactions/T300000014").header(HttpHeaders.AUTHORIZATION,"Bearer "+token))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("STEP_UP_PENDING"));
         mockMvc.perform(get("/api/v1/me/step-ups").header(HttpHeaders.AUTHORIZATION,"Bearer "+token))
-                .andExpect(status().isOk()).andExpect(jsonPath("$[0].step_up_id").value(stepUpId.toString()));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].step_up_id").value(stepUpId.toString()));
 
         mockMvc.perform(post("/api/v1/me/step-ups/{id}/responses", stepUpId)
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)

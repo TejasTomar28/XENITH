@@ -1,6 +1,7 @@
 import { http, HttpResponse } from 'msw';
 import { AlertEvidence, AlertSummary, ManagerProposal } from '../../types/analyst';
 import { CardholderTransaction } from '../../types/cardholder';
+import { toWireAlert, toWireEvidence, toWireProposal } from '../wire';
 
 export let mockAlerts: AlertSummary[] = [
   {
@@ -150,6 +151,71 @@ export let mockProposals: ManagerProposal[] = [
   },
 ];
 
+const evidenceFor = (alert: AlertSummary): AlertEvidence => ({
+  alert,
+  transaction: {
+    txn_id: alert.txn_id,
+    card_id: 'C1007',
+    masked_card_number: alert.masked_card_number || 'XXXXXXXXXXXX1234',
+    txn_ts: alert.created_at,
+    amount: alert.amount,
+    currency: 'INR',
+    merchant_id: 'M00911',
+    merchant_name: 'Tanishq Jewellers Flagship',
+    channel: 'POS',
+    txn_city: 'Mumbai',
+    txn_country: 'IN',
+    status: 'BLOCKED',
+  },
+  card: {
+    card_id: 'C1007',
+    masked_card_number: alert.masked_card_number || 'XXXXXXXXXXXX1234',
+    card_type: 'DEBIT',
+    card_status: 'ACTIVE',
+    expiry_date: '2028-12-31',
+    daily_limit: '200000.00',
+    international_enabled: true,
+  },
+  rule_decision: 'BLOCK',
+  decision: 'BLOCK',
+  reason_codes: alert.reason_codes || ['AMOUNT_SPIKE'],
+  rule_risk_score: 85,
+  features_used: {
+    velocity_10m: 4,
+    velocity_24h: 8,
+    approved_today: '45000.00',
+    avg_amount_30d: '12400.00',
+    speed_kmph: 840.5,
+    new_merchant_flag: true,
+    distance_from_home_km: 980.2,
+    card_age_days: 420,
+  },
+  fraud_score: 0.82,
+  top_factors: [
+    {
+      feature: 'amount_to_avg30_ratio',
+      explanation: 'Amount is 10.08 times the card 30-day average of ₹12,400.00',
+      contribution: 0.35,
+    },
+    {
+      feature: 'speed_kmph',
+      explanation: 'Physical velocity of 840.5 km/h exceeds 800 km/h threshold between cities',
+      contribution: 0.28,
+    },
+    {
+      feature: 'new_merchant_flag',
+      explanation: 'First transaction with this merchant in over 90 days',
+      contribution: 0.19,
+    },
+  ],
+  model_status: 'AVAILABLE',
+  model_version: 'xgb-v1.2',
+  second_detector_score: 0.78,
+  ai_narrative:
+    'Model indicates high likelihood of account takeover or compromised credentials. The card exhibited an impossible travel speed between Bangalore and Mumbai within 45 minutes, accompanied by an order of magnitude amount spike at a new high-value merchant.',
+  proposal: mockProposals.find((p) => p.alert_id === alert.alert_id) || null,
+});
+
 export const analystHandlers = [
   http.get('*/api/v1/analyst/alerts', ({ request }) => {
     const url = new URL(request.url);
@@ -177,7 +243,7 @@ export const analystHandlers = [
     });
 
     return HttpResponse.json({
-      items: filtered,
+      items: filtered.map(toWireAlert),
       page: 0,
       size: filtered.length,
       total: filtered.length,
@@ -208,7 +274,7 @@ export const analystHandlers = [
     alert.status = 'IN_REVIEW';
     alert.claimed_by = 'analyst1';
 
-    return HttpResponse.json(alert);
+    return HttpResponse.json(toWireAlert(alert));
   }),
 
   http.get('*/api/v1/analyst/alerts/:alert_id', ({ params }) => {
@@ -222,74 +288,7 @@ export const analystHandlers = [
       );
     }
 
-    const proposal = mockProposals.find((p) => p.alert_id === alertId) || null;
-
-    const evidence: AlertEvidence = {
-      alert,
-      transaction: {
-        txn_id: alert.txn_id,
-        card_id: 'C1007',
-        masked_card_number: alert.masked_card_number || 'XXXXXXXXXXXX1234',
-        txn_ts: alert.created_at,
-        amount: alert.amount,
-        currency: 'INR',
-        merchant_id: 'M00911',
-        merchant_name: 'Tanishq Jewellers Flagship',
-        channel: 'POS',
-        txn_city: 'Mumbai',
-        txn_country: 'IN',
-        status: 'BLOCKED',
-      },
-      card: {
-        card_id: 'C1007',
-        masked_card_number: alert.masked_card_number || 'XXXXXXXXXXXX1234',
-        card_type: 'DEBIT',
-        card_status: 'ACTIVE',
-        expiry_date: '2028-12-31',
-        daily_limit: '200000.00',
-        international_enabled: true,
-      },
-      rule_decision: 'BLOCK',
-      decision: 'BLOCK',
-      reason_codes: alert.reason_codes || ['AMOUNT_SPIKE'],
-      rule_risk_score: 85,
-      features_used: {
-        velocity_10m: 4,
-        velocity_24h: 8,
-        approved_today: '45000.00',
-        avg_amount_30d: '12400.00',
-        speed_kmph: 840.5,
-        new_merchant_flag: true,
-        distance_from_home_km: 980.2,
-        card_age_days: 420,
-      },
-      fraud_score: 0.82,
-      top_factors: [
-        {
-          feature: 'amount_to_avg30_ratio',
-          explanation: 'Amount is 10.08 times the card 30-day average of ₹12,400.00',
-          contribution: 0.35,
-        },
-        {
-          feature: 'speed_kmph',
-          explanation: 'Physical velocity of 840.5 km/h exceeds 800 km/h threshold between cities',
-          contribution: 0.28,
-        },
-        {
-          feature: 'new_merchant_flag',
-          explanation: 'First transaction with this merchant in over 90 days',
-          contribution: 0.19,
-        },
-      ],
-      model_status: 'AVAILABLE',
-      model_version: 'xgb-v1.2',
-      second_detector_score: 0.78,
-      ai_narrative:
-        'Model indicates high likelihood of account takeover or compromised credentials. The card exhibited an impossible travel speed between Bangalore and Mumbai within 45 minutes, accompanied by an order of magnitude amount spike at a new high-value merchant.',
-      proposal,
-    };
-
-    return HttpResponse.json(evidence);
+    return HttpResponse.json(toWireEvidence(evidenceFor(alert)));
   }),
 
   http.get('*/api/v1/analyst/alerts/:alert_id/history', () => {
@@ -420,15 +419,15 @@ export const analystHandlers = [
       mockProposals.push(newProposal);
 
       return HttpResponse.json({
-        alert,
-        proposal: newProposal,
+        alert: toWireEvidence(evidenceFor(alert)),
+        proposal: toWireProposal(newProposal),
       });
     }
 
     alert.status = body.resolution;
 
     return HttpResponse.json({
-      alert,
+      alert: toWireEvidence(evidenceFor(alert)),
       proposal: null,
     });
   }),
