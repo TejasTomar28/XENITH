@@ -16,6 +16,8 @@
     "@hookform/resolvers": "^3.9.0",
     "@mui/icons-material": "^5.16.7",
     "@mui/material": "^5.16.7",
+    "@mui/styled-engine": "^5.18.0",
+    "@mui/system": "^5.18.0",
     "@mui/x-charts": "^7.15.0",
     "@mui/x-data-grid": "^7.15.0",
     "@mui/x-date-pickers": "^7.15.0",

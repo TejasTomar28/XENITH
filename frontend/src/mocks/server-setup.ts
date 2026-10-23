@@ -15,5 +15,7 @@ export async function startWorker() {
   if (typeof window === 'undefined') return;
   await worker.start({
     onUnhandledRequest: 'bypass',
+    quiet: false,
   });
+  console.log('[MSW] Mock service worker started successfully');
 }
