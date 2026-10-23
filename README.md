@@ -45,3 +45,5 @@ Never commit credentials, actual cardholder information, customer records, or pr
 ## Collaboration
 
 Use `main` as the shared integration branch. Create short-lived feature branches, keep changes scoped, and review pull requests before merging. Developers can work independently in `frontend/`, `backend/`, and `ai-service/`, agreeing on API contracts in `docs/requirements/` before implementation. Keep secrets in local configuration and document new configuration keys in `.env.example`.
+
+# XENITH
