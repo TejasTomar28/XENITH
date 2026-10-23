@@ -5,7 +5,7 @@ import {
   ManagerDashboardMetrics,
   RuleConfiguration,
 } from '../../types/manager';
-import { mockAlerts, mockProposals } from './analyst';
+import { mockAlerts } from './analyst';
 
 export let mockManagerProposalsList: FalsePositiveProposalItem[] = [
   {
