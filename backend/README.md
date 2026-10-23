@@ -1,6 +1,6 @@
 # FraudShield backend
 
-This module contains the Java 17 Spring Boot backend for FraudShield. Milestone 01 provides database-backed users, stateless JWT authentication, role boundaries, gateway API-key enforcement and structured API errors. Milestone 02 adds the PostgreSQL persistence model, JPA repositories, official-data importer and evaluation reset support. Milestone 03 adds stored-history feature calculation and the complete rules-only R1-R13 evaluator. Milestone 04 adds the gateway authorization workflow, idempotent persistence, model inference fallback and fraud-alert creation.
+This module contains the Java 17 Spring Boot backend for FraudShield: authentication and role boundaries, gateway authorization, PostgreSQL persistence, R1–R13, FastAPI scoring and fallback, step-up verification, cardholder workflows, fraud operations, manager approval, audit, dashboard and deterministic batch processing.
 
 ## Requirements
 
@@ -48,14 +48,14 @@ export DEV_MANAGER_PASSWORD='set-a-local-password'
 
 The default development usernames are `cardholder`, `analyst` and `manager`. Override them with `DEV_CARDHOLDER_USERNAME`, `DEV_ANALYST_USERNAME` and `DEV_MANAGER_USERNAME`. Missing development passwords stop startup when seeding is enabled. Production configuration neither enables nor supplies development accounts.
 
-## Endpoints in this milestone
+## Endpoints
 
 - `GET /api/v1/health` is public and returns JSON.
 - `POST /api/v1/auth/login` returns a signed bearer token for an enabled user.
 - `GET /api/v1/auth/me` returns the authenticated identity.
 - `POST /api/v1/authorisations` validates and decides a transaction. It accepts only `X-API-Key`, persists the original response atomically and returns that response for an identical retry. Reusing a transaction ID with a changed payload returns HTTP 409.
 
-Future `/api/v1/me/**`, `/api/v1/analyst/**` and `/api/v1/manager/**` routes are restricted to their matching roles. Resource ownership checks will be added with the related domain entities.
+`/api/v1/me/**`, `/api/v1/analyst/**` and `/api/v1/manager/**` are restricted to their matching roles. Cardholder resources are checked against the authenticated user's customer identity. See `INTEGRATION_HANDOFF.md` for the complete route list.
 
 ## Persistence model
 
@@ -73,7 +73,7 @@ The result contains the rules-only decision, nullable hard-stop score, ordered r
 
 `TransactionAuthorizationService.authorize(AuthorizationRequest)` is the live entry point. It serializes same-card decisions with a PostgreSQL row lock, invokes the rules evaluator, calls FastAPI only for APPROVE or STEP_UP candidates, applies one AI-2 escalation step, and atomically writes transaction, feature, reason, prediction, audit and optional alert records. Model errors or calls exceeding 150 ms persist `MODEL_UNAVAILABLE` and return the rules-only decision.
 
-A STEP_UP result is stored as `STEP_UP_PENDING` and passed to `StepUpWorkflowHandoff`. Milestone 04 intentionally does not create an OTP or `step_up_requests` row; Milestone 05 must implement that handoff.
+A live STEP_UP result is stored as `STEP_UP_PENDING` and passed to `StepUpVerificationService`, which creates a protected OTP request and emits the simulated OTP through the restricted adapter only after commit.
 
 All runtime thresholds, windows, points and MCC lists are required in the active configuration JSON. Missing or malformed settings stop evaluation explicitly. There are no threshold defaults in application code. The currently supported normalized keys are exercised by the configuration tests; compatibility with the official JSON file must be confirmed when the source data pack is available.
 
@@ -114,6 +114,18 @@ The reset command deletes only transactions marked `resettable`, their cascading
 ```
 
 There is no reset HTTP endpoint. The database prevents normal updates or deletes on audit events; only the scoped reset function enables deletion during its transaction.
+
+## Batch processing
+
+The batch command accepts the official sample schema (including expected columns) or evaluation schema, resets prior evaluation activity, sorts rows by `txn_ts` then `txn_id`, and writes the official CSV files. Batch history is isolated to seeded history and earlier rows from the current batch source.
+
+```bash
+./mvnw spring-boot:run \
+  -Dspring-boot.run.profiles=evaluation \
+  -Dspring-boot.run.arguments="--spring.main.web-application-type=none --fraudshield.dataset.command=batch --fraudshield.dataset.input=/absolute/path/case_01_batch_transactions_eval_V1.0.csv --fraudshield.dataset.output-directory=target/fraudshield-output"
+```
+
+Outputs are `decisions_output.csv`, `alerts_output.csv` and `fraud_scores_output.csv`. Sample inputs are also compared with their six embedded expected decision columns and mismatching transaction IDs are reported.
 
 ## Tests
 

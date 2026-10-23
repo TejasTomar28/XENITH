@@ -79,11 +79,11 @@ class AuthorizationRecordStore {
         jdbc.update("""
                 INSERT INTO transactions(id,txn_id,card_id,txn_ts,amount,currency,merchant_id,mcc,channel,txn_city,txn_country,
                     status,rule_decision,original_decision,original_status,transaction_source,resettable,processed_at,version)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'LIVE',false,?,0)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
                 """, command.transactionId(), request.transactionId(), request.cardId(), request.transactionTimestamp(),
                 request.amount(), request.currency(), request.merchantId(), request.mcc(), request.channel().name(),
                 request.transactionCity(), request.transactionCountry(), command.finalStatus().name(), rule.decision().name(),
-                command.finalDecision().name(), command.finalStatus().name(), command.processedAt());
+                command.finalDecision().name(), command.finalStatus().name(), command.source().name(), command.resettable(), command.processedAt());
 
         jdbc.update("""
                 INSERT INTO transaction_features(transaction_id,velocity_10m,velocity_24h,approved_today,avg_amount_30d,
@@ -110,12 +110,13 @@ class AuthorizationRecordStore {
         jdbc.update("""
                 INSERT INTO audit_events(entity_type,entity_id,actor_id,actor_role,occurred_at,action,from_status,to_status,
                     after_value,resettable)
-                VALUES ('TRANSACTION',?,'transaction-gateway','GATEWAY',?,'AUTHORIZATION_DECIDED','RECEIVED',?,?::jsonb,false)
-                """, request.transactionId(), command.processedAt(), command.finalStatus().name(), json(java.util.Map.of(
+                VALUES ('TRANSACTION',?,?,?,?,?,'RECEIVED',?,?::jsonb,?)
+                """, request.transactionId(), command.actorId(), command.actorRole(), command.processedAt(),
+                "AUTHORIZATION_DECIDED", command.finalStatus().name(), json(java.util.Map.of(
                         "rule_decision", rule.decision().name(),
                         "decision", command.finalDecision().name(),
                         "reason_codes", command.finalReasonCodes(),
-                        "model_status", command.modelEvaluation().status().name())));
+                        "model_status", command.modelEvaluation().status().name())), command.resettable());
 
         if (command.alertId() != null) {
             jdbc.update("""
@@ -125,8 +126,9 @@ class AuthorizationRecordStore {
                     command.processedAt());
             jdbc.update("""
                     INSERT INTO audit_events(entity_type,entity_id,actor_id,actor_role,occurred_at,action,to_status,resettable)
-                    VALUES ('ALERT',?,'transaction-gateway','GATEWAY',?,'ALERT_CREATED','OPEN',false)
-                    """, command.alertId().toString(), command.processedAt());
+                    VALUES ('ALERT',?,?,?,?,?,'OPEN',?)
+                    """, command.alertId().toString(), command.actorId(), command.actorRole(), command.processedAt(),
+                    "ALERT_CREATED", command.resettable());
         }
     }
 

@@ -27,6 +27,7 @@ public class Card {
     public String getId() { return id; }
     public Customer getCustomer() { return customer; }
     public CardStatus getStatus() { return status; }
+    public CardStatus getSeedStatus() { return seedStatus; }
     public CardType getCardType() { return cardType; }
     public LocalDate getIssueDate() { return issueDate; }
     public LocalDate getExpiryDate() { return expiryDate; }

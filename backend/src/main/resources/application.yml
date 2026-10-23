@@ -2,6 +2,7 @@ spring:
   application:
     name: fraudshield-backend
   jackson:
+    property-naming-strategy: SNAKE_CASE
     deserialization:
       fail-on-unknown-properties: true
       adjust-dates-to-context-time-zone: false

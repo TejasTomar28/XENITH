@@ -32,6 +32,8 @@ public record RuleConfiguration(
         BigDecimal alertHighAmount,
         int alertHighSlaMinutes,
         int alertMediumSlaMinutes,
+        int stepUpExpiryMinutes,
+        BigDecimal makerCheckerLimit,
         BigDecimal aiStepUpThreshold,
         BigDecimal aiBlockThreshold) {
 
@@ -42,12 +44,13 @@ public record RuleConfiguration(
                 || highVelocityMinimum < 0 || highVelocityMaximum < highVelocityMinimum
                 || amountAverageLookbackDays <= 0 || impossibleTravelThresholdKmph < 0
                 || impossibleTravelLookbackHours <= 0 || newMerchantLookbackDays <= 0
-                || multipleRedFlagsCount <= 0 || alertHighSlaMinutes <= 0 || alertMediumSlaMinutes <= 0) {
+                || multipleRedFlagsCount <= 0 || alertHighSlaMinutes <= 0 || alertMediumSlaMinutes <= 0
+                || stepUpExpiryMinutes <= 0) {
             throw new IllegalArgumentException("Configuration windows and thresholds are invalid");
         }
         if (amountSpikeMultiplier.signum() <= 0 || amountSpikeMinimum.signum() < 0
                 || amountSpikeNoHistoryMinimum.signum() < 0 || oddHourMinimum.signum() < 0
-                || newMerchantMinimum.signum() < 0 || alertHighAmount.signum() < 0) {
+                || newMerchantMinimum.signum() < 0 || alertHighAmount.signum() < 0 || makerCheckerLimit.signum() < 0) {
             throw new IllegalArgumentException("Configuration amount thresholds are invalid");
         }
         if (aiStepUpThreshold.compareTo(BigDecimal.ZERO) < 0 || aiStepUpThreshold.compareTo(BigDecimal.ONE) > 0

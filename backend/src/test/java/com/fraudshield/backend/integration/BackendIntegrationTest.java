@@ -7,15 +7,19 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doAnswer;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fraudshield.backend.auth.UserAccount;
+import com.fraudshield.backend.auth.ApplicationRole;
 import com.fraudshield.backend.auth.UserAccountRepository;
+import com.fraudshield.backend.batch.BatchProcessingService;
 import com.fraudshield.backend.authorization.ai.FraudModelClient;
 import com.fraudshield.backend.authorization.ai.ModelEvaluation;
 import com.fraudshield.backend.authorization.ai.ModelStatus;
@@ -35,11 +39,14 @@ import com.fraudshield.backend.fraud.ReasonCode;
 import com.fraudshield.backend.fraud.RuleEvaluationResult;
 import com.fraudshield.backend.fraud.TransactionEvaluationRequest;
 import com.fraudshield.backend.security.GatewayApiKeyFilter;
+import com.fraudshield.backend.workflow.OtpNotification;
+import com.fraudshield.backend.workflow.StepUpVerificationService;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
+import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Set;
@@ -47,6 +54,7 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.flywaydb.core.Flyway;
@@ -141,16 +149,25 @@ class BackendIntegrationTest {
     @MockBean
     FraudModelClient modelClient;
 
+    @MockBean
+    OtpNotification otpNotification;
+
+    @Autowired
+    StepUpVerificationService stepUpVerificationService;
+
+    @Autowired
+    BatchProcessingService batchProcessingService;
+
     @BeforeEach
     void clearDomainData() {
         jdbc.execute("TRUNCATE TABLE audit_events, rule_configuration_versions, mcc_codes, country_risk CASCADE");
-        reset(modelClient);
+        reset(modelClient, otpNotification);
         when(modelClient.evaluate(any())).thenReturn(ModelEvaluation.unavailable());
     }
 
     @Test
     void applicationContextStartsAndMigrationIsApplied() throws Exception {
-        assertThat(flyway.info().applied()).hasSize(3);
+        assertThat(flyway.info().applied()).hasSize(4);
         try (var connection = dataSource.getConnection();
                 var result = connection.getMetaData().getTables(null, null, "app_users", new String[] {"TABLE"})) {
             assertThat(result.next()).isTrue();
@@ -569,9 +586,11 @@ class BackendIntegrationTest {
     }
 
     @Test
-    void softRuleCreatesPendingStateWithoutFakeOtp() throws Exception {
+    void softRuleCreatesProtectedStepUpAndEmitsOtpAfterCommit() throws Exception {
         seedReferenceData();
         insertActiveRuleConfiguration("auth-step-up", 5);
+        AtomicReference<String> deliveredOtp = new AtomicReference<>();
+        doAnswer(invocation -> { deliveredOtp.set(invocation.getArgument(2)); return null; }).when(otpNotification).send(any(), any(), any());
 
         mockMvc.perform(post("/api/v1/authorisations")
                         .header(GatewayApiKeyFilter.API_KEY_HEADER, GATEWAY_KEY)
@@ -583,7 +602,179 @@ class BackendIntegrationTest {
                 .andExpect(jsonPath("$.reason_codes[0]").value("AMOUNT_SPIKE"))
                 .andExpect(jsonPath("$.alert_id").doesNotExist());
 
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM step_up_requests", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM step_up_requests", Integer.class)).isEqualTo(1);
+        assertThat(deliveredOtp.get()).matches("[0-9]{6}");
+        String hash = jdbc.queryForObject("SELECT otp_hash FROM step_up_requests", String.class);
+        assertThat(hash).doesNotContain(deliveredOtp.get());
+    }
+
+    @Test
+    void cardholderCanConfirmOwnStepUpAndOtpCannotBeReplayed() throws Exception {
+        seedReferenceData();
+        jdbc.update("UPDATE customers SET user_id=(SELECT id FROM app_users WHERE username='cardholder') WHERE customer_id='C001'");
+        insertActiveRuleConfiguration("step-up-confirm", 5);
+        AtomicReference<String> otp = new AtomicReference<>();
+        doAnswer(invocation -> { otp.set(invocation.getArgument(2)); return null; }).when(otpNotification).send(any(), any(), any());
+        postAuthorization(authorizationBody("T300000014", "50000.00", "MER1", "5411", "ECOM"));
+        UUID stepUpId = jdbc.queryForObject("SELECT id FROM step_up_requests", UUID.class);
+        String token = login("cardholder", CARDHOLDER_PASSWORD);
+
+        mockMvc.perform(post("/api/v1/me/step-ups/{id}/responses", stepUpId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(java.util.Map.of("response", "CONFIRM", "otp", otp.get()))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CONFIRMED"));
+        assertThat(jdbc.queryForObject("SELECT status FROM transactions WHERE txn_id='T300000014'", String.class)).isEqualTo("APPROVED");
+
+        mockMvc.perform(post("/api/v1/me/step-ups/{id}/responses", stepUpId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(java.util.Map.of("response", "CONFIRM", "otp", otp.get()))))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void wrongOtpIsAuditedAndNotMeBlocksTransactionCardAndCreatesHighAlert() throws Exception {
+        seedReferenceData();
+        jdbc.update("UPDATE customers SET user_id=(SELECT id FROM app_users WHERE username='cardholder') WHERE customer_id='C001'");
+        insertActiveRuleConfiguration("step-up-deny", 5);
+        postAuthorization(authorizationBody("T300000015", "50000.00", "MER1", "5411", "ECOM"));
+        UUID stepUpId = jdbc.queryForObject("SELECT id FROM step_up_requests", UUID.class);
+        String token = login("cardholder", CARDHOLDER_PASSWORD);
+
+        mockMvc.perform(post("/api/v1/me/step-ups/{id}/responses", stepUpId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"response\":\"CONFIRM\",\"otp\":\"000000\"}"))
+                .andExpect(status().isUnprocessableEntity());
+        assertThat(jdbc.queryForObject("SELECT attempt_count FROM step_up_requests WHERE id=?", Integer.class, stepUpId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM audit_events WHERE entity_type='STEP_UP' AND action='OTP_FAILED'", Integer.class)).isEqualTo(1);
+
+        mockMvc.perform(post("/api/v1/me/step-ups/{id}/responses", stepUpId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"response\":\"NOT_ME\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DENIED"));
+        assertThat(jdbc.queryForObject("SELECT status FROM transactions WHERE txn_id='T300000015'", String.class)).isEqualTo("BLOCKED");
+        assertThat(jdbc.queryForObject("SELECT card_status FROM cards WHERE card_id='CARD1'", String.class)).isEqualTo("BLOCKED");
+        assertThat(jdbc.queryForObject("SELECT priority FROM fraud_alerts", String.class)).isEqualTo("HIGH");
+        assertThat(jdbc.queryForList("SELECT reason_code FROM transaction_reason_codes ORDER BY sequence_no", String.class)).contains("STEP_UP_DENIED");
+    }
+
+    @Test
+    void expiryBlocksTransactionCreatesAlertAndLeavesCardActive() throws Exception {
+        seedReferenceData();
+        jdbc.update("UPDATE customers SET user_id=(SELECT id FROM app_users WHERE username='cardholder') WHERE customer_id='C001'");
+        insertActiveRuleConfiguration("step-up-expiry", 5);
+        postAuthorization(authorizationBody("T300000016", "25000.00", "MER1", "5411", "ECOM"));
+        UUID stepUpId = jdbc.queryForObject("SELECT id FROM step_up_requests", UUID.class);
+        jdbc.update("UPDATE step_up_requests SET expires_at=CURRENT_TIMESTAMP-interval '1 second' WHERE id=?", stepUpId);
+
+        String token=login("cardholder",CARDHOLDER_PASSWORD);
+        mockMvc.perform(post("/api/v1/me/step-ups/{id}/responses",stepUpId)
+                        .header(HttpHeaders.AUTHORIZATION,"Bearer "+token).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"response\":\"CONFIRM\",\"otp\":\"000000\"}"))
+                .andExpect(status().isConflict());
+        assertThat(stepUpVerificationService.expireOne(stepUpId)).isFalse();
+        assertThat(jdbc.queryForObject("SELECT status FROM transactions WHERE txn_id='T300000016'", String.class)).isEqualTo("BLOCKED");
+        assertThat(jdbc.queryForObject("SELECT card_status FROM cards WHERE card_id='CARD1'", String.class)).isEqualTo("ACTIVE");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fraud_alerts", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForList("SELECT reason_code FROM transaction_reason_codes", String.class)).contains("STEP_UP_TIMEOUT");
+    }
+
+    @Test
+    void analystAndManagerCompleteHighValueMakerCheckerLifecycle() throws Exception {
+        seedReferenceData();
+        insertActiveRuleConfiguration("review-workflow", 5);
+        jdbc.update("UPDATE merchants SET merchant_risk='BLACKLISTED' WHERE merchant_id='MER1'");
+        MvcResult authorization = postAuthorization(authorizationBody("T300000017", "150000.00", "MER1", "5411", "POS"));
+        UUID alertId = UUID.fromString(objectMapper.readTree(authorization.getResponse().getContentAsString()).get("alert_id").asText());
+        String analyst = login("analyst", ANALYST_PASSWORD);
+
+        mockMvc.perform(post("/api/v1/analyst/alerts/{id}/claim", alertId).header(HttpHeaders.AUTHORIZATION,"Bearer "+analyst))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("IN_REVIEW"));
+        mockMvc.perform(post("/api/v1/analyst/alerts/{id}/resolutions", alertId)
+                        .header(HttpHeaders.AUTHORIZATION,"Bearer "+analyst).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"resolution\":\"FALSE_POSITIVE\",\"comment\":\"Reviewed with the cardholder\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.alert.status").value("PENDING_MANAGER_APPROVAL"));
+        UUID proposalId=jdbc.queryForObject("SELECT id FROM manager_approval_proposals",UUID.class);
+        String manager=login("manager",MANAGER_PASSWORD);
+        mockMvc.perform(post("/api/v1/manager/false-positive-proposals/{id}/decisions",proposalId)
+                        .header(HttpHeaders.AUTHORIZATION,"Bearer "+manager).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"decision\":\"REJECT\",\"comment\":\"Independent evidence review confirms fraud\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.alert.status").value("CONFIRMED_FRAUD"));
+        assertThat(jdbc.queryForObject("SELECT status FROM manager_approval_proposals WHERE id=?",String.class,proposalId)).isEqualTo("REJECTED");
+        assertThat(jdbc.queryForObject("SELECT card_status FROM cards WHERE card_id='CARD1'",String.class)).isEqualTo("BLOCKED");
+    }
+
+    @Test
+    void exactMakerCheckerBoundaryFinalizesAndManagerCannotCheckOwnProposal() throws Exception {
+        seedReferenceData();insertActiveRuleConfiguration("maker-checker",5);jdbc.update("UPDATE merchants SET merchant_risk='BLACKLISTED' WHERE merchant_id='MER1'");
+        String analyst=login("analyst",ANALYST_PASSWORD);String manager=login("manager",MANAGER_PASSWORD);
+        UUID lowAlert=UUID.fromString(objectMapper.readTree(postAuthorization(authorizationBody("T300000018","100000.00","MER1","5411","POS")).getResponse().getContentAsString()).get("alert_id").asText());
+        mockMvc.perform(post("/api/v1/analyst/alerts/{id}/claim",lowAlert).header(HttpHeaders.AUTHORIZATION,"Bearer "+analyst)).andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/analyst/alerts/{id}/resolutions",lowAlert).header(HttpHeaders.AUTHORIZATION,"Bearer "+analyst).contentType(MediaType.APPLICATION_JSON).content("{\"resolution\":\"FALSE_POSITIVE\",\"comment\":\"Reviewed exact threshold\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.alert.status").value("FALSE_POSITIVE"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM manager_approval_proposals",Integer.class)).isZero();
+
+        jdbc.update("UPDATE cards SET daily_limit=200000 WHERE card_id='CARD1'");
+        UUID highAlert=UUID.fromString(objectMapper.readTree(postAuthorization(authorizationBody("T300000019","100000.01","MER1","5411","POS")).getResponse().getContentAsString()).get("alert_id").asText());
+        mockMvc.perform(post("/api/v1/analyst/alerts/{id}/claim",highAlert).header(HttpHeaders.AUTHORIZATION,"Bearer "+analyst)).andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/analyst/alerts/{id}/resolutions",highAlert).header(HttpHeaders.AUTHORIZATION,"Bearer "+analyst).contentType(MediaType.APPLICATION_JSON).content("{\"resolution\":\"FALSE_POSITIVE\",\"comment\":\"Reviewed above threshold\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.alert.status").value("PENDING_MANAGER_APPROVAL"));
+        UUID proposal=jdbc.queryForObject("SELECT id FROM manager_approval_proposals",UUID.class);
+        UUID managerId=userAccountRepository.findByUsername("manager").orElseThrow().getId();UUID analystId=userAccountRepository.findByUsername("analyst").orElseThrow().getId();
+        jdbc.update("UPDATE manager_approval_proposals SET proposed_by=? WHERE id=?",managerId,proposal);
+        mockMvc.perform(post("/api/v1/manager/false-positive-proposals/{id}/decisions",proposal).header(HttpHeaders.AUTHORIZATION,"Bearer "+manager).contentType(MediaType.APPLICATION_JSON).content("{\"decision\":\"APPROVE\",\"comment\":\"Independent review\"}"))
+                .andExpect(status().isForbidden());
+        jdbc.update("UPDATE manager_approval_proposals SET proposed_by=? WHERE id=?",analystId,proposal);
+        mockMvc.perform(post("/api/v1/manager/false-positive-proposals/{id}/decisions",proposal).header(HttpHeaders.AUTHORIZATION,"Bearer "+manager).contentType(MediaType.APPLICATION_JSON).content("{\"decision\":\"APPROVE\",\"comment\":\"Independent review\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.alert.status").value("FALSE_POSITIVE"));
+    }
+
+    @Test
+    void managerConfigurationUpdateIsAuditedAndAffectsNextDecision() throws Exception {
+        seedReferenceData();insertActiveRuleConfiguration("manager-config",5);insertTransaction("T000000097","2026-03-05T14:00:00+05:30","1000.00","APPROVED","POS","MER1");
+        String analyst=login("analyst",ANALYST_PASSWORD);String manager=login("manager",MANAGER_PASSWORD);
+        mockMvc.perform(put("/api/v1/manager/rule-configuration").header(HttpHeaders.AUTHORIZATION,"Bearer "+analyst).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isForbidden());
+        MvcResult current=mockMvc.perform(get("/api/v1/manager/rule-configuration").header(HttpHeaders.AUTHORIZATION,"Bearer "+manager)).andExpect(status().isOk()).andReturn();
+        JsonNode currentJson=objectMapper.readTree(current.getResponse().getContentAsString());
+        ((com.fasterxml.jackson.databind.node.ObjectNode)currentJson.get("settings")).put("velocity_burst_count",1);
+        String update=objectMapper.writeValueAsString(java.util.Map.of("expected_version",currentJson.get("version").asText(),"settings",currentJson.get("settings"),"comment","Lower threshold for controlled test"));
+        mockMvc.perform(put("/api/v1/manager/rule-configuration").header(HttpHeaders.AUTHORIZATION,"Bearer "+manager).contentType(MediaType.APPLICATION_JSON).content(update))
+                .andExpect(status().isOk());
+        postAuthorization(authorizationBodyAt("T300000020","1000.00","2026-03-05T14:05:00+05:30"));
+        assertThat(jdbc.queryForObject("SELECT rule_decision FROM transactions WHERE txn_id='T300000020'",String.class)).isEqualTo("BLOCK");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM audit_events WHERE entity_type='CONFIGURATION' AND action='CONFIGURATION_UPDATED'",Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentStepUpResponsesProduceOneFinalTransition() throws Exception {
+        seedReferenceData();jdbc.update("UPDATE customers SET user_id=(SELECT id FROM app_users WHERE username='cardholder') WHERE customer_id='C001'");insertActiveRuleConfiguration("step-up-race",5);
+        AtomicReference<String> otp=new AtomicReference<>();doAnswer(invocation->{otp.set(invocation.getArgument(2));return null;}).when(otpNotification).send(any(),any(),any());
+        postAuthorization(authorizationBody("T300000021","50000.00","MER1","5411","ECOM"));UUID id=jdbc.queryForObject("SELECT id FROM step_up_requests",UUID.class);String token=login("cardholder",CARDHOLDER_PASSWORD);
+        CountDownLatch start=new CountDownLatch(1);var executor=Executors.newFixedThreadPool(2);
+        try{var confirm=executor.submit(()->{start.await();return mockMvc.perform(post("/api/v1/me/step-ups/{id}/responses",id).header(HttpHeaders.AUTHORIZATION,"Bearer "+token).contentType(MediaType.APPLICATION_JSON).content("{\"response\":\"CONFIRM\",\"otp\":\""+otp.get()+"\"}")).andReturn().getResponse().getStatus();});var deny=executor.submit(()->{start.await();return mockMvc.perform(post("/api/v1/me/step-ups/{id}/responses",id).header(HttpHeaders.AUTHORIZATION,"Bearer "+token).contentType(MediaType.APPLICATION_JSON).content("{\"response\":\"NOT_ME\"}")).andReturn().getResponse().getStatus();});start.countDown();assertThat(Set.of(confirm.get(10,TimeUnit.SECONDS),deny.get(10,TimeUnit.SECONDS))).containsExactlyInAnyOrder(200,409);}finally{executor.shutdownNow();}
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM audit_events WHERE entity_type='TRANSACTION' AND entity_id='T300000021' AND action IN ('STEP_UP_CONFIRMED','STEP_UP_DENIED')",Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentAnalystClaimsAndManagerDecisionsHaveOneWinner() throws Exception {
+        seedReferenceData();insertActiveRuleConfiguration("human-races",5);jdbc.update("UPDATE merchants SET merchant_risk='BLACKLISTED' WHERE merchant_id='MER1'");
+        UserAccount analystTwo=UserAccount.create("analyst_two",passwordEncoder.encode("analyst-two-password"),ApplicationRole.FRAUD_ANALYST,true,Instant.now());userAccountRepository.save(analystTwo);
+        String analystOneToken=login("analyst",ANALYST_PASSWORD),analystTwoToken=login("analyst_two","analyst-two-password");
+        UUID alert=UUID.fromString(objectMapper.readTree(postAuthorization(authorizationBody("T300000022","150000.00","MER1","5411","POS")).getResponse().getContentAsString()).get("alert_id").asText());
+        CountDownLatch claimStart=new CountDownLatch(1);var claimPool=Executors.newFixedThreadPool(2);int firstStatus,secondStatus;
+        try{var first=claimPool.submit(()->{claimStart.await();return mockMvc.perform(post("/api/v1/analyst/alerts/{id}/claim",alert).header(HttpHeaders.AUTHORIZATION,"Bearer "+analystOneToken)).andReturn().getResponse().getStatus();});var second=claimPool.submit(()->{claimStart.await();return mockMvc.perform(post("/api/v1/analyst/alerts/{id}/claim",alert).header(HttpHeaders.AUTHORIZATION,"Bearer "+analystTwoToken)).andReturn().getResponse().getStatus();});claimStart.countDown();firstStatus=first.get(10,TimeUnit.SECONDS);secondStatus=second.get(10,TimeUnit.SECONDS);assertThat(Set.of(firstStatus,secondStatus)).containsExactlyInAnyOrder(200,409);}finally{claimPool.shutdownNow();}
+        UUID assigned=jdbc.queryForObject("SELECT assigned_analyst_id FROM fraud_alerts WHERE id=?",UUID.class,alert);String owner=assigned.equals(analystTwo.getId())?analystTwoToken:analystOneToken;
+        mockMvc.perform(post("/api/v1/analyst/alerts/{id}/resolutions",alert).header(HttpHeaders.AUTHORIZATION,"Bearer "+owner).contentType(MediaType.APPLICATION_JSON).content("{\"resolution\":\"FALSE_POSITIVE\",\"comment\":\"Concurrent claim winner review\"}")).andExpect(status().isOk());
+        UUID proposal=jdbc.queryForObject("SELECT id FROM manager_approval_proposals",UUID.class);UserAccount managerTwo=UserAccount.create("manager_two",passwordEncoder.encode("manager-two-password"),ApplicationRole.FRAUD_RISK_MANAGER,true,Instant.now());userAccountRepository.save(managerTwo);String managerOne=login("manager",MANAGER_PASSWORD),managerTwoToken=login("manager_two","manager-two-password");
+        CountDownLatch decisionStart=new CountDownLatch(1);var decisionPool=Executors.newFixedThreadPool(2);
+        try{var approve=decisionPool.submit(()->{decisionStart.await();return mockMvc.perform(post("/api/v1/manager/false-positive-proposals/{id}/decisions",proposal).header(HttpHeaders.AUTHORIZATION,"Bearer "+managerOne).contentType(MediaType.APPLICATION_JSON).content("{\"decision\":\"APPROVE\",\"comment\":\"First independent review\"}")).andReturn().getResponse().getStatus();});var reject=decisionPool.submit(()->{decisionStart.await();return mockMvc.perform(post("/api/v1/manager/false-positive-proposals/{id}/decisions",proposal).header(HttpHeaders.AUTHORIZATION,"Bearer "+managerTwoToken).contentType(MediaType.APPLICATION_JSON).content("{\"decision\":\"REJECT\",\"comment\":\"Second independent review\"}")).andReturn().getResponse().getStatus();});decisionStart.countDown();assertThat(Set.of(approve.get(10,TimeUnit.SECONDS),reject.get(10,TimeUnit.SECONDS))).containsExactlyInAnyOrder(200,409);}finally{decisionPool.shutdownNow();}
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM audit_events WHERE entity_type='PROPOSAL' AND entity_id=? AND action IN ('PROPOSAL_APPROVED','PROPOSAL_REJECTED')",Integer.class,proposal.toString())).isEqualTo(1);
     }
 
     @Test
@@ -746,6 +937,56 @@ class BackendIntegrationTest {
                 .isEqualTo(2);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM transactions WHERE txn_id IN ('T300000012','T300000013') AND original_decision='BLOCK'", Integer.class))
                 .isEqualTo(1);
+    }
+
+    @Test
+    void batchUsesDeterministicRulesOnlyHistoryAndWritesOfficialSchemas(@TempDir Path directory) throws Exception {
+        seedReferenceData();
+        insertActiveRuleConfiguration("batch-config",5);
+        insertTransaction("T000000098","2026-03-05T14:04:00+05:30","99999.00","APPROVED","POS","MER1");
+        jdbc.update("UPDATE transactions SET transaction_source='LIVE' WHERE txn_id='T000000098'");
+        jdbc.update("UPDATE cards SET card_status='BLOCKED' WHERE card_id='CARD1'");
+        Path input=directory.resolve("case_01_batch_transactions_sample_V1.0.csv");
+        Files.writeString(input,"""
+                txn_id,card_id,txn_ts,amount,currency,merchant_id,mcc,channel,txn_city,txn_country,expected_decision,expected_reason_codes,expected_rule_risk_score,expected_velocity_10m,expected_avg_amount_30d,expected_speed_kmph
+                T400000002,CARD1,2026-03-05T14:06:00+05:30,1000.00,INR,MER1,5411,POS,Mumbai,IN,APPROVE,,0,1,1000.00,0.00
+                T400000001,CARD1,2026-03-05T14:05:00+05:30,1000.00,INR,MER1,5411,POS,Mumbai,IN,APPROVE,,0,0,,
+                """);
+
+        var result=batchProcessingService.process(input,directory.resolve("out"));
+
+        assertThat(result.processed()).isEqualTo(2);
+        assertThat(result.sampleMatched()).isEqualTo(2);
+        assertThat(result.sampleMismatches()).isEmpty();
+        assertThat(Files.readAllLines(result.decisionsOutput())).containsExactly(
+                "txn_id,decision,reason_codes,rule_risk_score,velocity_10m,avg_amount_30d,speed_kmph",
+                "T400000001,APPROVE,,0,0,,",
+                "T400000002,APPROVE,,0,1,1000.00,0.00");
+        assertThat(Files.readAllLines(result.alertsOutput())).containsExactly("txn_id,alert_priority,sla_due_at");
+        assertThat(Files.readAllLines(result.fraudScoresOutput())).containsExactly(
+                "txn_id,fraud_score,final_decision,top_factors",
+                "T400000001,,APPROVE,",
+                "T400000002,,APPROVE,");
+        assertThat(jdbc.queryForList("SELECT transaction_source FROM transactions WHERE txn_id LIKE 'T4%' ORDER BY txn_id",String.class))
+                .containsExactly("BATCH_SAMPLE","BATCH_SAMPLE");
+    }
+
+    @Test
+    void syntheticThreeHundredRowBatchCompletesWithinOfficialBudget(@TempDir Path directory) throws Exception {
+        seedReferenceData();
+        insertActiveRuleConfiguration("batch-performance",5);
+        StringBuilder csv=new StringBuilder("txn_id,card_id,txn_ts,amount,currency,merchant_id,mcc,channel,txn_city,txn_country\n");
+        OffsetDateTime start=OffsetDateTime.parse("2026-03-05T10:00:00+05:30");
+        for(int index=0;index<300;index++)csv.append("T5").append("%08d".formatted(index)).append(",CARD1,")
+                .append(start.plusSeconds(index)).append(",1.00,INR,MER1,5411,POS,Mumbai,IN\n");
+        Path input=directory.resolve("case_01_batch_transactions_eval_V1.0.csv");Files.writeString(input,csv);
+
+        var result=batchProcessingService.process(input,directory.resolve("out"));
+
+        assertThat(result.processed()).isEqualTo(300);
+        assertThat(result.durationMillis()).isLessThan(60_000);
+        assertThat(Files.readAllLines(result.decisionsOutput())).hasSize(301);
+        assertThat(Files.readAllLines(result.fraudScoresOutput())).hasSize(301);
     }
 
     private void seedReferenceData() {

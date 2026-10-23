@@ -4,6 +4,7 @@ import com.fraudshield.backend.authorization.ai.ModelEvaluation;
 import com.fraudshield.backend.authorization.dto.AuthorizationRequest;
 import com.fraudshield.backend.domain.model.TransactionDecision;
 import com.fraudshield.backend.domain.model.TransactionStatus;
+import com.fraudshield.backend.domain.model.TransactionSource;
 import com.fraudshield.backend.fraud.RuleEvaluationResult;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -20,4 +21,8 @@ record AuthorizationPersistenceCommand(
         UUID alertId,
         String alertPriority,
         OffsetDateTime alertDueAt,
-        OffsetDateTime processedAt) {}
+        OffsetDateTime processedAt,
+        TransactionSource source,
+        boolean resettable,
+        String actorId,
+        String actorRole) {}

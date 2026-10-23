@@ -3,6 +3,7 @@ package com.fraudshield.backend.authorization;
 import com.fraudshield.backend.authorization.dto.AuthorizationRequest;
 import com.fraudshield.backend.authorization.dto.AuthorizationResponse;
 import com.fraudshield.backend.common.exception.ConflictException;
+import com.fraudshield.backend.domain.model.TransactionSource;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
@@ -26,6 +27,14 @@ public class TransactionAuthorizationService {
         } catch (DataIntegrityViolationException exception) {
             StoredAuthorization winner = records.find(request.transactionId()).orElseThrow(() -> exception);
             return replay(winner, request);
+        }
+    }
+
+    public AuthorizationResponse authorizeBatch(AuthorizationRequest request,TransactionSource source) {
+        StoredAuthorization existing=records.find(request.transactionId()).orElse(null);
+        if(existing!=null)return replay(existing,request);
+        try{return processor.processBatch(request,source);}catch(DataIntegrityViolationException exception){
+            StoredAuthorization winner=records.find(request.transactionId()).orElseThrow(()->exception);return replay(winner,request);
         }
     }
 

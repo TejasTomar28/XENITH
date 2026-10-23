@@ -16,11 +16,14 @@ public class DatasetCommandRunner implements ApplicationRunner {
     private final DatasetCommandProperties properties;
     private final OfficialDatasetImporter importer;
     private final EvaluationResetService resetService;
+    private final com.fraudshield.backend.batch.BatchProcessingService batchService;
 
-    public DatasetCommandRunner(DatasetCommandProperties properties, OfficialDatasetImporter importer, EvaluationResetService resetService) {
+    public DatasetCommandRunner(DatasetCommandProperties properties, OfficialDatasetImporter importer, EvaluationResetService resetService,
+            com.fraudshield.backend.batch.BatchProcessingService batchService) {
         this.properties = properties;
         this.importer = importer;
         this.resetService = resetService;
+        this.batchService = batchService;
     }
 
     @Override
@@ -33,8 +36,15 @@ public class DatasetCommandRunner implements ApplicationRunner {
         } else if (command.equals("reset")) {
             EvaluationResetService.ResetSummary summary = resetService.reset();
             LOGGER.info("Evaluation reset completed: deletedTransactions={}, restoredCards={}", summary.deletedTransactions(), summary.restoredCards());
+        } else if(command.equals("batch")){
+            if(properties.input()==null)throw new DatasetImportException("fraudshield.dataset.input is required for batch");
+            resetService.reset();
+            java.nio.file.Path output=properties.outputDirectory()==null?java.nio.file.Path.of("target/fraudshield-output"):properties.outputDirectory();
+            var result=batchService.process(properties.input(),output);
+            LOGGER.info("Batch completed: processed={}, alerts={}, durationMs={}, sampleMatched={}, sampleMismatches={}",
+                    result.processed(),result.alerts(),result.durationMillis(),result.sampleMatched(),result.sampleMismatches());
         } else {
-            throw new DatasetImportException("fraudshield.dataset.command must be seed or reset");
+            throw new DatasetImportException("fraudshield.dataset.command must be seed, reset or batch");
         }
     }
 }

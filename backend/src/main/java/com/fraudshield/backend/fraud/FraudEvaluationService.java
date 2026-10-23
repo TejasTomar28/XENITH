@@ -9,6 +9,7 @@ import com.fraudshield.backend.domain.repository.CityRepository;
 import com.fraudshield.backend.domain.repository.CountryRiskRepository;
 import com.fraudshield.backend.domain.repository.MerchantCategoryCodeRepository;
 import com.fraudshield.backend.domain.repository.MerchantRepository;
+import com.fraudshield.backend.domain.model.TransactionSource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -44,10 +45,20 @@ public class FraudEvaluationService {
 
     @Transactional(readOnly = true)
     public RuleEvaluationResult evaluate(TransactionEvaluationRequest request) {
+        return evaluate(request,null);
+    }
+
+    @Transactional(readOnly = true)
+    public RuleEvaluationResult evaluateBatch(TransactionEvaluationRequest request,TransactionSource source) {
+        if(source!=TransactionSource.BATCH_SAMPLE&&source!=TransactionSource.EVALUATION)throw new IllegalArgumentException("Unsupported batch source");
+        return evaluate(request,source);
+    }
+
+    private RuleEvaluationResult evaluate(TransactionEvaluationRequest request,TransactionSource source) {
         Card cardEntity = cards.findById(request.cardId())
                 .orElseThrow(() -> new MissingReferenceDataException("Unknown card: " + request.cardId()));
         CardEvaluationProfile card = new CardEvaluationProfile(
-                cardEntity.getId(), cardEntity.getStatus(), cardEntity.getCardType(), cardEntity.getIssueDate(),
+                cardEntity.getId(), source==null?cardEntity.getStatus():cardEntity.getSeedStatus(), cardEntity.getCardType(), cardEntity.getIssueDate(),
                 cardEntity.getExpiryDate(), cardEntity.getHomeCity(), cardEntity.getHomeCountry(),
                 cardEntity.getDailyLimit(), cardEntity.isInternationalEnabled());
 
@@ -67,8 +78,9 @@ public class FraudEvaluationService {
         CountryRisk country = countries.findById(request.transactionCountry())
                 .orElseThrow(() -> new MissingReferenceDataException("Unknown country: " + request.transactionCountry()));
         RuleConfiguration configuration = configurations.current();
-        CalculatedTransactionFeatures features = featureCalculator.calculate(
-                request, card, merchant, mcc.getCategory(), country.getRiskLevel().equals("HIGH"), configuration);
+        CalculatedTransactionFeatures features = source==null?featureCalculator.calculate(
+                request,card,merchant,mcc.getCategory(),country.getRiskLevel().equals("HIGH"),configuration)
+                :featureCalculator.calculateForBatch(request,card,merchant,mcc.getCategory(),country.getRiskLevel().equals("HIGH"),configuration,source);
         return rulesEngine.evaluate(
                 request, card, merchant, country.getRiskLevel().equals("HIGH"), features, configuration);
     }

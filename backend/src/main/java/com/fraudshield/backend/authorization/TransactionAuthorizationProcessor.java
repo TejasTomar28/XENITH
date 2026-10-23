@@ -8,6 +8,7 @@ import com.fraudshield.backend.authorization.dto.AuthorizationResponse;
 import com.fraudshield.backend.domain.model.AlertPriority;
 import com.fraudshield.backend.domain.model.TransactionDecision;
 import com.fraudshield.backend.domain.model.TransactionStatus;
+import com.fraudshield.backend.domain.model.TransactionSource;
 import com.fraudshield.backend.domain.repository.CardRepository;
 import com.fraudshield.backend.domain.repository.CityRepository;
 import com.fraudshield.backend.domain.repository.CountryRiskRepository;
@@ -84,6 +85,16 @@ class TransactionAuthorizationProcessor {
 
     @Transactional
     public AuthorizationResponse process(AuthorizationRequest request) {
+        return process(request,TransactionSource.LIVE);
+    }
+
+    @Transactional
+    public AuthorizationResponse processBatch(AuthorizationRequest request,TransactionSource source) {
+        if(source!=TransactionSource.BATCH_SAMPLE&&source!=TransactionSource.EVALUATION)throw new IllegalArgumentException("Unsupported batch source");
+        return process(request,source);
+    }
+
+    private AuthorizationResponse process(AuthorizationRequest request,TransactionSource source) {
         validateTimestamp(request);
         cards.lockById(request.cardId())
                 .orElseThrow(() -> new MissingReferenceDataException("Unknown card: " + request.cardId()));
@@ -100,13 +111,14 @@ class TransactionAuthorizationProcessor {
         TransactionEvaluationRequest evaluationRequest = new TransactionEvaluationRequest(
                 request.transactionId(), request.cardId(), request.transactionTimestamp(), request.amount(), request.currency(),
                 request.merchantId(), request.mcc(), request.channel(), request.transactionCity(), request.transactionCountry());
-        RuleEvaluationResult ruleResult = fraudEvaluationService.evaluate(evaluationRequest);
+        boolean batch=source!=TransactionSource.LIVE;
+        RuleEvaluationResult ruleResult = batch?fraudEvaluationService.evaluateBatch(evaluationRequest,source):fraudEvaluationService.evaluate(evaluationRequest);
         RuleConfiguration configuration = ruleResult.features().aiFeatures() == null ? null : configurations.current();
         ModelEvaluation model = evaluateModel(ruleResult);
 
         TransactionDecision finalDecision = ruleResult.decision();
         List<String> reasons = new ArrayList<>(ruleResult.reasonCodes().stream().map(Enum::name).toList());
-        if (model.status() == ModelStatus.AVAILABLE) {
+        if (!batch && model.status() == ModelStatus.AVAILABLE) {
             if (ruleResult.decision() == TransactionDecision.APPROVE
                     && model.fraudScore().compareTo(configuration.aiStepUpThreshold()) >= 0) {
                 finalDecision = TransactionDecision.STEP_UP;
@@ -123,17 +135,19 @@ class TransactionAuthorizationProcessor {
             case STEP_UP -> TransactionStatus.STEP_UP_PENDING;
             case BLOCK -> TransactionStatus.BLOCKED;
         };
-        OffsetDateTime processedAt = OffsetDateTime.now(clock).withOffsetSameInstant(IST);
+        OffsetDateTime processedAt = batch?request.transactionTimestamp():OffsetDateTime.now(clock).withOffsetSameInstant(IST);
         UUID transactionId = UUID.randomUUID();
         UUID alertId = shouldCreateAlert(finalDecision, reasons) ? UUID.randomUUID() : null;
-        AlertPriority priority = alertId == null ? null : priority(request.amount(), reasons, model, configuration);
+        AlertPriority priority = alertId == null ? null : priority(request.amount(), reasons,
+                batch?ModelEvaluation.notEvaluated():model, configuration);
         OffsetDateTime alertDueAt = priority == null ? null : processedAt.plusMinutes(
                 priority == AlertPriority.HIGH ? configuration.alertHighSlaMinutes() : configuration.alertMediumSlaMinutes());
 
         records.persist(new AuthorizationPersistenceCommand(
                 transactionId, request, ruleResult, finalDecision, finalStatus, reasons, model, alertId,
-                priority == null ? null : priority.name(), alertDueAt, processedAt));
-        if (finalStatus == TransactionStatus.STEP_UP_PENDING) {
+                priority == null ? null : priority.name(), alertDueAt, processedAt,source,batch,
+                batch?"batch-runner":"transaction-gateway",batch?"SYSTEM":"GATEWAY"));
+        if (!batch && finalStatus == TransactionStatus.STEP_UP_PENDING) {
             stepUpHandoff.transactionPending(transactionId, request.transactionId());
         }
         return records.find(request.transactionId()).orElseThrow().response();

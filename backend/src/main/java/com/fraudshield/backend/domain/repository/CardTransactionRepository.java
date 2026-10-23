@@ -3,6 +3,7 @@ package com.fraudshield.backend.domain.repository;
 import com.fraudshield.backend.domain.model.CardTransaction;
 import com.fraudshield.backend.domain.model.TransactionChannel;
 import com.fraudshield.backend.domain.model.TransactionStatus;
+import com.fraudshield.backend.domain.model.TransactionSource;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -30,6 +31,13 @@ public interface CardTransactionRepository extends JpaRepository<CardTransaction
             @Param("currentTimestamp") OffsetDateTime currentTimestamp);
 
     @Query("""
+            select count(t) from CardTransaction t where t.card.id=:cardId and t.source in :sources
+              and t.transactionTimestamp>=:windowStart and t.transactionTimestamp<:currentTimestamp
+            """)
+    long countPriorTransactionsForSources(@Param("cardId") String cardId,@Param("sources") Set<TransactionSource> sources,
+            @Param("windowStart") OffsetDateTime windowStart,@Param("currentTimestamp") OffsetDateTime currentTimestamp);
+
+    @Query("""
             select coalesce(sum(t.amount), 0) from CardTransaction t
             where t.card.id = :cardId and t.status = :approved
               and t.transactionTimestamp >= :istDayStart
@@ -39,6 +47,14 @@ public interface CardTransactionRepository extends JpaRepository<CardTransaction
             @Param("cardId") String cardId,
             @Param("approved") TransactionStatus approved,
             @Param("istDayStart") OffsetDateTime istDayStart,
+            @Param("currentTimestamp") OffsetDateTime currentTimestamp);
+
+    @Query("""
+            select coalesce(sum(t.amount),0) from CardTransaction t where t.card.id=:cardId and t.status=:approved
+              and t.source in :sources and t.transactionTimestamp>=:istDayStart and t.transactionTimestamp<:currentTimestamp
+            """)
+    BigDecimal sumApprovedBeforeOnIstDayForSources(@Param("cardId") String cardId,@Param("approved") TransactionStatus approved,
+            @Param("sources") Set<TransactionSource> sources,@Param("istDayStart") OffsetDateTime istDayStart,
             @Param("currentTimestamp") OffsetDateTime currentTimestamp);
 
     @Query("""
@@ -53,6 +69,14 @@ public interface CardTransactionRepository extends JpaRepository<CardTransaction
             @Param("windowStart") OffsetDateTime windowStart,
             @Param("currentTimestamp") OffsetDateTime currentTimestamp);
 
+    @Query("""
+            select avg(t.amount) from CardTransaction t where t.card.id=:cardId and t.status=:approved
+              and t.source in :sources and t.transactionTimestamp>=:windowStart and t.transactionTimestamp<:currentTimestamp
+            """)
+    Optional<BigDecimal> averageApprovedAmountForSources(@Param("cardId") String cardId,@Param("approved") TransactionStatus approved,
+            @Param("sources") Set<TransactionSource> sources,@Param("windowStart") OffsetDateTime windowStart,
+            @Param("currentTimestamp") OffsetDateTime currentTimestamp);
+
     Optional<CardTransaction>
             findFirstByCardIdAndStatusAndChannelInAndTransactionTimestampGreaterThanEqualAndTransactionTimestampLessThanOrderByTransactionTimestampDescTransactionIdDesc(
                     String cardId,
@@ -60,6 +84,11 @@ public interface CardTransactionRepository extends JpaRepository<CardTransaction
                     Set<TransactionChannel> physicalChannels,
                     OffsetDateTime windowStart,
                     OffsetDateTime currentTimestamp);
+
+    Optional<CardTransaction>
+            findFirstByCardIdAndStatusAndSourceInAndChannelInAndTransactionTimestampGreaterThanEqualAndTransactionTimestampLessThanOrderByTransactionTimestampDescTransactionIdDesc(
+                    String cardId,TransactionStatus approved,Set<TransactionSource> sources,Set<TransactionChannel> physicalChannels,
+                    OffsetDateTime windowStart,OffsetDateTime currentTimestamp);
 
     @Query("""
             select (count(t) > 0) from CardTransaction t
@@ -71,5 +100,13 @@ public interface CardTransactionRepository extends JpaRepository<CardTransaction
             @Param("cardId") String cardId,
             @Param("merchantId") String merchantId,
             @Param("windowStart") OffsetDateTime windowStart,
+            @Param("currentTimestamp") OffsetDateTime currentTimestamp);
+
+    @Query("""
+            select (count(t)>0) from CardTransaction t where t.card.id=:cardId and t.merchant.id=:merchantId
+              and t.source in :sources and t.transactionTimestamp>=:windowStart and t.transactionTimestamp<:currentTimestamp
+            """)
+    boolean existsPriorMerchantTransactionForSources(@Param("cardId") String cardId,@Param("merchantId") String merchantId,
+            @Param("sources") Set<TransactionSource> sources,@Param("windowStart") OffsetDateTime windowStart,
             @Param("currentTimestamp") OffsetDateTime currentTimestamp);
 }
