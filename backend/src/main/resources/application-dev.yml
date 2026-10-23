@@ -1,0 +1,9 @@
+fraudshield:
+  dev-users:
+    enabled: ${DEV_USERS_ENABLED:false}
+    cardholder-username: ${DEV_CARDHOLDER_USERNAME:cardholder}
+    cardholder-password: ${DEV_CARDHOLDER_PASSWORD:}
+    analyst-username: ${DEV_ANALYST_USERNAME:analyst}
+    analyst-password: ${DEV_ANALYST_PASSWORD:}
+    manager-username: ${DEV_MANAGER_USERNAME:manager}
+    manager-password: ${DEV_MANAGER_PASSWORD:}
