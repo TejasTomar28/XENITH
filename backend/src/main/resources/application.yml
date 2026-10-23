@@ -34,6 +34,8 @@ server:
       enabled: false
 
 fraudshield:
+  cors:
+    allowed-origins: ${FRONTEND_ORIGINS:http://localhost:5173}
   security:
     jwt:
       secret: ${JWT_SECRET:}

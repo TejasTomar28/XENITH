@@ -42,6 +42,9 @@ public class TransactionAuthorizationService {
         if (!existing.matches(request)) {
             throw new ConflictException("Transaction ID is already associated with a different request");
         }
+        if (existing.response() == null) {
+            throw new ConflictException("Transaction ID already exists without a replayable authorization response");
+        }
         return existing.response();
     }
 }

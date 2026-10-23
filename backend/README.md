@@ -25,6 +25,7 @@ Set secrets in the environment. Do not commit their values.
 | `AI_SERVICE_URL` | Internal FastAPI prediction URL, default `http://localhost:8000/internal/v1/predictions` |
 | `AI_INTERNAL_API_KEY` | Credential sent only to the internal FastAPI service |
 | `AI_TIMEOUT_MS` | Total model-call budget in milliseconds, maximum and default 150 |
+| `FRONTEND_ORIGINS` | Comma-separated browser origin allowlist; default `http://localhost:5173` |
 
 Start the application from this directory after PostgreSQL is ready:
 
@@ -59,7 +60,7 @@ The default development usernames are `cardholder`, `analyst` and `manager`. Ove
 
 ## Persistence model
 
-Flyway V2 creates reference tables for countries, cities and merchant category codes; identity/card tables for customers and cards; merchant and transaction tables; feature, reason-code and model-prediction records; step-up, alert and manager-approval workflow records; notification outbox records; versioned rule configuration; append-only audit events; and import execution metadata. Flyway V3 adds the rules-only decision and score fields needed to reproduce an AI-influenced authorization response.
+Flyway V2 creates reference tables for countries, cities and merchant category codes; identity/card tables for customers and cards; merchant and transaction tables; feature, reason-code and model-prediction records; step-up, alert and manager-approval workflow records; notification outbox records; versioned rule configuration; append-only audit events; and import execution metadata. Flyway V3 adds rules-only decision and score fields. Flyway V5 adds an immutable authorization-response snapshot so retries remain byte-equivalent after later lifecycle changes.
 
 Transaction timestamps use PostgreSQL `TIMESTAMPTZ` and Java `OffsetDateTime`. Money uses `NUMERIC` and `BigDecimal`. Card records contain only a BCrypt hash and the final four digits of the synthetic card number. Mutable cards, transactions, step-up requests, alerts and manager proposals have version columns. Card and alert repositories also expose pessimistic locking queries for future transactional workflows.
 
@@ -133,4 +134,4 @@ Outputs are `decisions_output.csv`, `alerts_output.csv` and `fraud_scores_output
 mvn verify
 ```
 
-JWT, rules-engine and HTTP model-client unit tests do not need database infrastructure. The integration suite uses a real PostgreSQL Testcontainer to run all migrations, validate Hibernate mappings, exercise constraints/imports/history queries/reset behavior, authorize transactions end to end, verify idempotency and same-card locking, and recheck Milestone 01 authentication. It is skipped when Docker is unavailable; H2 is not used.
+JWT, rules-engine and HTTP model-client unit tests do not need database infrastructure. The integration suite uses a real PostgreSQL Testcontainer to run all migrations, validate Hibernate mappings, exercise constraints/imports/history queries/reset behavior, authorize transactions end to end, verify 10/50-request duplicate races, lifecycle retries, database rollback/retry, OTP/alert/manager races, CORS and same-card locking, and recheck authentication. It is skipped when Docker is unavailable; H2 is not used.

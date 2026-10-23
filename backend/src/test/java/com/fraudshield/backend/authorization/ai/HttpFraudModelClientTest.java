@@ -9,10 +9,12 @@ import com.fraudshield.backend.fraud.AiFeatureVector;
 import com.sun.net.httpserver.HttpServer;
 import java.math.BigDecimal;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -77,6 +79,35 @@ class HttpFraudModelClientTest {
 
         assertThat(result.status()).isEqualTo(ModelStatus.MODEL_UNAVAILABLE);
         assertThat(Duration.between(started, Instant.now())).isLessThan(Duration.ofMillis(250));
+    }
+
+    @Test
+    void httpErrorMalformedAndMissingFieldsUseFallback() throws Exception {
+        AtomicInteger calls=new AtomicInteger();
+        start(exchange->{
+            int call=calls.getAndIncrement();
+            if(call==0)respond(exchange,503,"{\"detail\":\"unavailable\"}");
+            else if(call==1)respond(exchange,200,"not-json");
+            else respond(exchange,200,"{\"fraud_score\":0.4}");
+        });
+
+        assertThat(client(150).evaluate(features()).status()).isEqualTo(ModelStatus.MODEL_UNAVAILABLE);
+        assertThat(client(150).evaluate(features()).status()).isEqualTo(ModelStatus.MODEL_UNAVAILABLE);
+        assertThat(client(150).evaluate(features()).status()).isEqualTo(ModelStatus.MODEL_UNAVAILABLE);
+    }
+
+    @Test
+    void connectionRefusedUsesFallback() throws Exception {
+        int unusedPort;
+        try(ServerSocket socket=new ServerSocket(0)){unusedPort=socket.getLocalPort();}
+        HttpFraudModelClient client=new HttpFraudModelClient(
+                new AiClientProperties("http://localhost:"+unusedPort+"/predict","internal-test-key",150),
+                new ObjectMapper());
+
+        ModelEvaluation result=client.evaluate(features());
+
+        assertThat(result.status()).isEqualTo(ModelStatus.MODEL_UNAVAILABLE);
+        assertThat(result.fraudScore()).isNull();
     }
 
     private HttpFraudModelClient client(int timeoutMs) {
