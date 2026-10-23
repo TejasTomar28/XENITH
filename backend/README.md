@@ -1,6 +1,6 @@
 # FraudShield backend
 
-This module contains the Java 17 Spring Boot foundation for FraudShield. Milestone 01 provides PostgreSQL/Flyway startup, database-backed users, stateless JWT authentication, role boundaries, gateway API-key enforcement and structured API errors. Transaction processing and fraud rules are intentionally not implemented yet.
+This module contains the Java 17 Spring Boot backend for FraudShield: authentication and role boundaries, gateway authorization, PostgreSQL persistence, R1–R13, FastAPI scoring and fallback, step-up verification, cardholder workflows, fraud operations, manager approval, audit, dashboard and deterministic batch processing.
 
 ## Requirements
 
@@ -22,6 +22,10 @@ Set secrets in the environment. Do not commit their values.
 | `JWT_ISSUER` | Token issuer, default `fraudshield-backend` |
 | `JWT_EXPIRATION_SECONDS` | Token lifetime, 60–86400 seconds; default 3600 |
 | `GATEWAY_API_KEY` | Simulated gateway key, at least 24 characters |
+| `AI_SERVICE_URL` | Internal FastAPI prediction URL, default `http://localhost:8000/internal/v1/predictions` |
+| `AI_INTERNAL_API_KEY` | Credential sent only to the internal FastAPI service |
+| `AI_TIMEOUT_MS` | Total model-call budget in milliseconds, maximum and default 150 |
+| `FRONTEND_ORIGINS` | Comma-separated browser origin allowlist; default `http://localhost:5173` |
 
 Start the application from this directory after PostgreSQL is ready:
 
@@ -45,14 +49,84 @@ export DEV_MANAGER_PASSWORD='set-a-local-password'
 
 The default development usernames are `cardholder`, `analyst` and `manager`. Override them with `DEV_CARDHOLDER_USERNAME`, `DEV_ANALYST_USERNAME` and `DEV_MANAGER_USERNAME`. Missing development passwords stop startup when seeding is enabled. Production configuration neither enables nor supplies development accounts.
 
-## Endpoints in this milestone
+## Endpoints
 
 - `GET /api/v1/health` is public and returns JSON.
 - `POST /api/v1/auth/login` returns a signed bearer token for an enabled user.
 - `GET /api/v1/auth/me` returns the authenticated identity.
-- `POST /api/v1/authorisations` has no controller yet. The security chain already requires `X-API-Key`; a valid gateway request reaches the application and receives 404 until transaction processing is implemented.
+- `POST /api/v1/authorisations` validates and decides a transaction. It accepts only `X-API-Key`, persists the original response atomically and returns that response for an identical retry. Reusing a transaction ID with a changed payload returns HTTP 409.
 
-Future `/api/v1/me/**`, `/api/v1/analyst/**` and `/api/v1/manager/**` routes are restricted to their matching roles. Resource ownership checks will be added with the related domain entities.
+`/api/v1/me/**`, `/api/v1/analyst/**` and `/api/v1/manager/**` are restricted to their matching roles. Cardholder resources are checked against the authenticated user's customer identity. See `INTEGRATION_HANDOFF.md` for the complete route list.
+
+## Persistence model
+
+Flyway V2 creates reference tables for countries, cities and merchant category codes; identity/card tables for customers and cards; merchant and transaction tables; feature, reason-code and model-prediction records; step-up, alert and manager-approval workflow records; notification outbox records; versioned rule configuration; append-only audit events; and import execution metadata. Flyway V3 adds rules-only decision and score fields. Flyway V5 adds an immutable authorization-response snapshot so retries remain byte-equivalent after later lifecycle changes.
+
+Transaction timestamps use PostgreSQL `TIMESTAMPTZ` and Java `OffsetDateTime`. Money uses `NUMERIC` and `BigDecimal`. Card records contain only a BCrypt hash and the final four digits of the synthetic card number. Mutable cards, transactions, step-up requests, alerts and manager proposals have version columns. Card and alert repositories also expose pessimistic locking queries for future transactional workflows.
+
+The transaction repository provides strict-prior queries for velocity, same-IST-day approved spend, 30-day approved average, the most recent approved physical transaction and 90-day merchant familiarity. Ownership queries traverse the authenticated user's customer and card relationships.
+
+## Rules-only fraud evaluation
+
+`FraudEvaluationService.evaluate(TransactionEvaluationRequest)` is the internal Milestone 03 entry point. It loads the card first and evaluates R1/R2 without reading historical features. For non-hard-stop requests it loads reference data and the active persisted configuration, calculates stored-history and AI-compatible features, then evaluates R3-R13 in official rule order.
+
+The result contains the rules-only decision, nullable hard-stop score, ordered reason codes, calculated features and configuration checksum. The evaluator itself does not persist the current request, mutate lifecycle status, create an alert, generate an OTP or call the AI service.
+
+`TransactionAuthorizationService.authorize(AuthorizationRequest)` is the live entry point. It serializes same-card decisions with a PostgreSQL row lock, invokes the rules evaluator, calls FastAPI only for APPROVE or STEP_UP candidates, applies one AI-2 escalation step, and atomically writes transaction, feature, reason, prediction, audit and optional alert records. Model errors or calls exceeding 150 ms persist `MODEL_UNAVAILABLE` and return the rules-only decision.
+
+A live STEP_UP result is stored as `STEP_UP_PENDING` and passed to `StepUpVerificationService`, which creates a protected OTP request and emits the simulated OTP through the restricted adapter only after commit.
+
+All runtime thresholds, windows, points and MCC lists are required in the active configuration JSON. Missing or malformed settings stop evaluation explicitly. There are no threshold defaults in application code. The currently supported normalized keys are exercised by the configuration tests; compatibility with the official JSON file must be confirmed when the source data pack is available.
+
+Historical queries use a lower-inclusive, upper-exclusive window: `[current timestamp - configured window, current timestamp)`. Equal timestamps are excluded by the official strict-prior rule. Travel-speed math still implements the documented `99999.99` sentinel for a zero elapsed interval with positive distance, although a strict-prior repository lookup cannot select an equal-timestamp predecessor.
+
+## Official dataset seed
+
+The seed command expects these exact files in one directory:
+
+- `case_01_country_risk_V1.0.csv`
+- `case_01_cities_V1.0.csv`
+- `case_01_mcc_codes_V1.0.csv`
+- `case_01_customers_V1.0.csv`
+- `case_01_cards_V1.0.csv`
+- `case_01_merchants_V1.0.csv`
+- `case_01_rules_config_V1.0.json`
+- `case_01_transactions_history_V1.0.csv`
+
+It validates headers, formats, enums and references; imports in dependency order inside one transaction; preserves source transaction instants; stores rule JSON without assuming undocumented keys; and skips existing identifiers/checksums on repeat runs. The command is available only under the `dev` or `evaluation` profile.
+
+```bash
+export FRAUDSHIELD_DATASET_CUSTOMER_SEED_PASSWORD='set-a-local-password'
+./mvnw spring-boot:run \
+  -Dspring-boot.run.profiles=dev \
+  -Dspring-boot.run.arguments="--spring.main.web-application-type=none --fraudshield.dataset.command=seed --fraudshield.dataset.directory=/absolute/path/to/data-pack"
+```
+
+The supplied dataset password is BCrypt-hashed for imported cardholder accounts. Do not put it in source control or command-line arguments.
+
+## Evaluation reset
+
+The reset command deletes only transactions marked `resettable`, their cascading feature, reason, prediction, step-up, alert, approval and notification records, and their resettable audit events. It restores affected cards to their seeded status and preserves users, customers, cards, merchants, reference data, configuration and historical transactions.
+
+```bash
+./mvnw spring-boot:run \
+  -Dspring-boot.run.profiles=evaluation \
+  -Dspring-boot.run.arguments="--spring.main.web-application-type=none --fraudshield.dataset.command=reset"
+```
+
+There is no reset HTTP endpoint. The database prevents normal updates or deletes on audit events; only the scoped reset function enables deletion during its transaction.
+
+## Batch processing
+
+The batch command accepts the official sample schema (including expected columns) or evaluation schema, resets prior evaluation activity, sorts rows by `txn_ts` then `txn_id`, and writes the official CSV files. Batch history is isolated to seeded history and earlier rows from the current batch source.
+
+```bash
+./mvnw spring-boot:run \
+  -Dspring-boot.run.profiles=evaluation \
+  -Dspring-boot.run.arguments="--spring.main.web-application-type=none --fraudshield.dataset.command=batch --fraudshield.dataset.input=/absolute/path/case_01_batch_transactions_eval_V1.0.csv --fraudshield.dataset.output-directory=target/fraudshield-output"
+```
+
+Outputs are `decisions_output.csv`, `alerts_output.csv` and `fraud_scores_output.csv`. Sample inputs are also compared with their six embedded expected decision columns and mismatching transaction IDs are reported.
 
 ## Tests
 
@@ -60,4 +134,4 @@ Future `/api/v1/me/**`, `/api/v1/analyst/**` and `/api/v1/manager/**` routes are
 mvn verify
 ```
 
-JWT unit tests do not need infrastructure. The integration suite uses a real PostgreSQL Testcontainer and is skipped when Docker is unavailable; H2 is not used.
+JWT, rules-engine and HTTP model-client unit tests do not need database infrastructure. The integration suite uses a real PostgreSQL Testcontainer to run all migrations, validate Hibernate mappings, exercise constraints/imports/history queries/reset behavior, authorize transactions end to end, verify 10/50-request duplicate races, lifecycle retries, database rollback/retry, OTP/alert/manager races, CORS and same-card locking, and recheck authentication. It is skipped when Docker is unavailable; H2 is not used.

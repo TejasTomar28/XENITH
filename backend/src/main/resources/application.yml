@@ -1,6 +1,11 @@
 spring:
   application:
     name: fraudshield-backend
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    deserialization:
+      fail-on-unknown-properties: true
+      adjust-dates-to-context-time-zone: false
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/fraudshield}
     username: ${DB_USERNAME:fraudshield}
@@ -29,6 +34,8 @@ server:
       enabled: false
 
 fraudshield:
+  cors:
+    allowed-origins: ${FRONTEND_ORIGINS:http://localhost:5173}
   security:
     jwt:
       secret: ${JWT_SECRET:}
@@ -38,3 +45,7 @@ fraudshield:
       api-key: ${GATEWAY_API_KEY:}
   dev-users:
     enabled: false
+  ai:
+    prediction-url: ${AI_SERVICE_URL:http://localhost:8000/internal/v1/predictions}
+    internal-api-key: ${AI_INTERNAL_API_KEY:}
+    timeout-ms: ${AI_TIMEOUT_MS:150}
