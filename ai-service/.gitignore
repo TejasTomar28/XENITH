@@ -1,0 +1,7 @@
+artifacts/*
+!artifacts/.gitkeep
+*.joblib
+synthetic/*.csv
+__pycache__/
+*.py[cod]
+.pytest_cache/
