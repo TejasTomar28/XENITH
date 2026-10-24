@@ -401,16 +401,6 @@ pytest test_service.py
 
 ---
 
-## 🏆 Hackathon & Interview Presentation Guide
-
-When presenting **XENITH** to technical interviewers:
-1. **Highlight the Hybrid Engine**: Explain why combining deterministic rules (R1-R13) with ML inference is essential in fintech (hard stops save compute and comply with banking policy; ML catches nuanced synthetic identity fraud).
-2. **Discuss Latency & Circuit Breaking**: Showcase the p95 < 300ms SLA and how the backend falls back to rules if the ML service is under load.
-3. **Walk through the Maker-Checker Protocol**: Emphasize internal fraud prevention with the 4-eyes principle on ₹100,000+ overrides.
-4. **Demonstrate Explainable AI**: Show how SHAP values are translated into human-readable insights for analysts instead of black-box scores.
-
----
-
 <div align="center">
   <b>Developed for the HCLTech AI Full Stack Developer Hackathon</b><br>
   <i>XENITH — Detect intelligently. Verify confidently. Act securely.</i>
